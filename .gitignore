@@ -1,0 +1,7 @@
+# 本地运行文件（不入库）
+__pycache__/
+*.pyc
+web/.runtime/
+*.log
+
+# localbrain 数据目录在仓库外 (~/.knowledge-base)，无需忽略

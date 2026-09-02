@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>知识库问答 · AI软件测试</title>
+<style>
+  :root {
+    --bg:#0f1420; --panel:#171e2e; --panel2:#1e2740; --line:#2a3552;
+    --text:#e8edf7; --muted:#8fa0bf; --accent:#4f8cff; --ok:#34c77b; --warn:#f0a83c; --bad:#e05d5d;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif; background:var(--bg); color:var(--text); height:100vh; display:flex; flex-direction:column; }
+  header { display:flex; align-items:center; gap:14px; padding:12px 20px; border-bottom:1px solid var(--line); background:var(--panel); flex-wrap:wrap; }
+  header h1 { font-size:17px; margin:0; font-weight:600; }
+  .sub { color:var(--muted); font-size:12px; }
+  .badge { font-size:12px; padding:3px 10px; border-radius:20px; border:1px solid var(--line); background:var(--panel2); color:var(--muted); }
+  .badge.on { color:var(--ok); border-color:var(--ok); }
+  #main { flex:1; overflow-y:auto; padding:18px 20px; display:flex; flex-direction:column; gap:14px; max-width:860px; width:100%; margin:0 auto; }
+  .msg { max-width:78%; padding:11px 14px; border-radius:14px; line-height:1.65; white-space:pre-wrap; word-break:break-word; font-size:14.5px; }
+  .msg.user { align-self:flex-end; background:var(--accent); color:#fff; border-bottom-right-radius:4px; }
+  .msg.bot { align-self:flex-start; background:var(--panel2); border:1px solid var(--line); border-bottom-left-radius:4px; }
+  .msg.system { align-self:center; background:transparent; color:var(--muted); font-size:12.5px; border:1px dashed var(--line); }
+  .sources { align-self:flex-start; width:78%; max-width:78%; }
+  details { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:8px 12px; margin-top:4px; }
+  summary { cursor:pointer; color:var(--accent); font-size:13px; }
+  .src { padding:7px 4px; border-top:1px dashed var(--line); font-size:13px; }
+  .src b { color:var(--text); }
+  .src .meta { color:var(--muted); font-size:12px; }
+  .src .snippet { color:#c3cde2; margin-top:4px; font-size:12.5px; }
+  footer { border-top:1px solid var(--line); background:var(--panel); padding:12px 20px; }
+  .box { max-width:860px; margin:0 auto; display:flex; gap:10px; }
+  textarea { flex:1; resize:none; background:var(--panel2); color:var(--text); border:1px solid var(--line); border-radius:10px; padding:10px 12px; font-size:14.5px; font-family:inherit; outline:none; height:52px; }
+  textarea:focus { border-color:var(--accent); }
+  button { background:var(--accent); color:#fff; border:none; border-radius:10px; padding:0 22px; font-size:14.5px; cursor:pointer; }
+  button:disabled { opacity:.55; cursor:not-allowed; }
+  .hint { color:var(--muted); font-size:12px; margin-top:6px; text-align:center; }
+  .spin { display:inline-block; width:14px; height:14px; border:2px solid rgba(255,255,255,.4); border-top-color:#fff; border-radius:50%; animation:r .7s linear infinite; vertical-align:-2px; }
+  @keyframes r { to { transform:rotate(360deg); } }
+</style>
+</head>
+<body>
+<header>
+  <h1>📚 知识库问答</h1>
+  <span class="sub">AI软件测试 · localbrain</span>
+  <span id="mode" class="badge">检测中…</span>
+  <span id="items" class="badge">条目：-</span>
+  <span class="sub" style="margin-left:auto">数据目录 ~/.knowledge-base（仓库外）</span>
+</header>
+<div id="main">
+  <div class="msg system">直接提问即可（无需经过 agent）。回答基于你沉淀的知识库内容，附引用片段；未配置 AI 服务时自动降级为「检索相关片段」。</div>
+</div>
+<footer>
+  <div class="box">
+    <textarea id="q" placeholder="例：被测项目介绍里，测试人员为什么要先熟悉业务？给我讲讲 AI 生成测试用例的思路…" rows="1"></textarea>
+    <button id="send">发送</button>
+  </div>
+  <div class="hint" id="hint"></div>
+</footer>
+<script>
+const $main = document.getElementById('main');
+const $q = document.getElementById('q');
+const $send = document.getElementById('send');
+const $mode = document.getElementById('mode');
+const $items = document.getElementById('items');
+
+function esc(s){return s.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function addMsg(role, html){const d=document.createElement('div'); d.className='msg '+role; d.innerHTML=html; $main.appendChild(d); $main.scrollTop=$main.scrollHeight; return d;}
+
+async function refreshStatus(){
+  try{
+    const r = await fetch('/api/status'); const s = await r.json();
+    let txt='未知', cls='';
+    if(s.error){ txt='引擎异常'; cls='bad'; }
+    else if(s.modes.rag){ txt='RAG 生成式问答'; cls='on'; }
+    else if(s.modes.semantic){ txt='语义检索（无LLM）'; cls=''; }
+    else { txt='关键词检索'; cls=''; }
+    $mode.textContent = txt; $mode.className='badge '+cls;
+    $items.textContent = '条目：' + (s.items>=0?s.items:'?');
+  }catch(e){ $mode.textContent='服务未连接'; }
+}
+
+function renderSources(sources){
+  if(!sources || !sources.length) return '';
+  const inner = sources.map(s=>{
+    const meta = [s.source?('来源: '+esc(s.source)):'', s.tags&&s.tags.length?('标签: '+s.tags.join(', ')):'', s.score?('相似度: '+s.score):''].filter(Boolean).join(' · ');
+    return `<div class="src"><b>${esc(s.title||s.id)}</b><div class="meta">${meta}</div><div class="snippet">${esc(s.content)}</div></div>`;
+  }).join('');
+  return `<div class="sources"><details><summary>📎 引用片段（${sources.length}）</summary>${inner}</details></div>`;
+}
+
+async function ask(){
+  const q = $q.value.trim(); if(!q) return;
+  $q.value=''; $send.disabled=true; $send.innerHTML='<span class="spin"></span>';
+  addMsg('user', esc(q));
+  const wait = addMsg('bot','思考中…');
+  try{
+    const r = await fetch('/api/ask', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({question:q, top_k:6})});
+    const j = await r.json();
+    if(!r.ok){ wait.textContent = '错误：' + (j.detail||r.status); return; }
+    let prefix='';
+    if(j.mode==='semantic') prefix='（当前无大模型配置：以下为语义检索到的相关片段，非 AI 总结）\n\n';
+    if(j.mode==='keyword') prefix='（未配置嵌入服务：以下为关键词检索片段）\n\n';
+    if(j.mode==='none') prefix='（知识库中未找到相关内容）\n\n';
+    wait.textContent = prefix + (j.answer||'');
+    wait.insertAdjacentHTML('afterend', renderSources(j.sources));
+  }catch(e){ wait.textContent = '请求失败：' + e; }
+  finally{ $send.disabled=false; $send.textContent='发送'; $q.focus(); }
+}
+
+$send.onclick = ask;
+$q.addEventListener('keydown', e=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); ask(); }});
+refreshStatus(); setInterval(refreshStatus, 15000); $q.focus();
+</script>
+</body>
+</html>
