@@ -2,6 +2,11 @@
 
 在浏览器里直接向「AI软件测试」知识库提问的后端与页面（main 分支维护）。
 
+> ⚠️ **给自己的提醒（重要）**：先用阿里云 DashScope 免费额度把整库与问答跑通；免费额度用完 / 想完全本地化后，
+> **切换成本地模型**——把 `~/.localbrain/config.yaml` 的 `embedding`/`llm` 两段改成走本地 **new-api（OpenAI 兼容）接 Ollama**
+> （改 provider/model/api_key/base_url 四字段，重启服务即可，页面状态栏会自动切换模式）。本仓库所有文件不含任何 key。
+
+
 ## 运行前提
 
 1. localbrain 已安装并初始化（数据在 `~/.knowledge-base`，配置 `~/.localbrain/config.yaml`）
