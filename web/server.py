@@ -68,20 +68,30 @@ _rag_cache: Dict[str, Any] = {}
 
 
 def _get_rag():
-    """仅在嵌入+LLM 都配好时才构造 RAGQuery（避免空 key 触发无谓的远端调用）。"""
+    """仅在嵌入+LLM 都配好时才构造 RAGQuery（避免空 key 触发无谓的远端调用）。
+
+    失败不永久缓存：启动瞬间若 Chroma 等暂不可用（如刚被强杀留有锁），
+    会每隔 RETRY_INTERVAL 秒自动重建一次，实现自愈。
+    """
+    import time
+    RETRY_INTERVAL = 8.0
     emb_ok, llm_ok = _service_keys()
     if not (emb_ok and llm_ok):
         _rag_cache["rag"] = None
         return None
-    if "rag" not in _rag_cache or _rag_cache.get("rag") is None:
+    rag = _rag_cache.get("rag")
+    if rag is None and time.time() - _rag_cache.get("last_try", 0.0) > RETRY_INTERVAL:
+        _rag_cache["last_try"] = time.time()
         try:
             from kb.query.rag import RAGQuery
-            _rag_cache["rag"] = RAGQuery(_config())
+            rag = RAGQuery(_config())
+            _rag_cache["rag"] = rag
+            _rag_cache.pop("err", None)
         except Exception as e:  # noqa: BLE001
-            log.exception("RAGQuery init failed")
+            log.exception("RAGQuery init failed (will retry later)")
             _rag_cache["rag"] = None
             _rag_cache["err"] = str(e)
-    return _rag_cache.get("rag")
+    return rag
 
 
 def _count_items(config) -> int:
@@ -117,13 +127,21 @@ def _to_source_list(items) -> list:
         meta = s.metadata or {}
         fallback = (meta.get("original_filename") or meta.get("file_path") or s.id)
         title = (meta.get("title") or _read_title(meta, Path(str(fallback)).stem or s.id))
+        # localbrain 写入 Chroma 时 tags 是逗号拼接字符串，统一规范成数组
+        raw_tags = meta.get("tags", [])
+        if isinstance(raw_tags, str):
+            tags = [t.strip() for t in raw_tags.split(",") if t.strip()]
+        elif isinstance(raw_tags, (list, tuple)):
+            tags = [str(t) for t in raw_tags]
+        else:
+            tags = []
         out.append({
             "id": s.id,
             "title": str(title),
             "source": str(meta.get("source", "")),
             "score": round(float(getattr(s, "score", 0) or 0), 3),
             "content": (getattr(s, "content", "") or "")[:600],
-            "tags": meta.get("tags", []),
+            "tags": tags,
         })
     return out
 

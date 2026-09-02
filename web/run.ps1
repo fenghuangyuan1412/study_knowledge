@@ -37,6 +37,20 @@ function Test-Running {
 $url = 'http://' + $HostAddr + ':' + $Port
 
 if ($Action -eq 'start') {
+    # 端口自清理：若端口被残留的本服务进程占用（pid 文件之外的旧进程），先结束它
+    try {
+        $holder = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($holder -and $holder.OwningProcess -ne $currentPid) {
+            $hp = $holder.OwningProcess
+            $pi = Get-CimInstance Win32_Process -Filter ("ProcessId=" + $hp) -ErrorAction SilentlyContinue
+            if ($pi -and $pi.CommandLine -like '*server.py*') {
+                Stop-Process -Id $hp -Force -ErrorAction SilentlyContinue
+                Write-Host ('cleaned stale server on port ' + $Port + ' (old PID ' + $hp + ')')
+                Start-Sleep -Seconds 1
+            }
+        }
+    }
+    catch { }
     if (Test-Running) {
         Write-Host ('already running (PID ' + $currentPid + '): ' + $url)
     }
@@ -46,6 +60,16 @@ if ($Action -eq 'start') {
         $p = Start-Process -FilePath $py -ArgumentList @('server.py') -WorkingDirectory $here -WindowStyle Hidden -RedirectStandardOutput $logFile -RedirectStandardError $errFile -PassThru
         Set-Content -Path $pidFile -Value $p.Id
         Start-Sleep -Seconds 3
+        # uv 的 Scripts\python.exe 是包装器，会再拉起真正的解释器当监听者；
+        # pid 文件应记录真实监听进程，否则 stop 杀不掉、旧进程变“幽灵”占端口
+        try {
+            $real = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($real -and $real.OwningProcess -ne $p.Id) {
+                Set-Content -Path $pidFile -Value $real.OwningProcess
+                Write-Host ('real listener PID ' + $real.OwningProcess + ' recorded (uv wrapper)')
+            }
+        }
+        catch { }
         Write-Host ('started (PID ' + $p.Id + '): ' + $url)
         try {
             $null = Invoke-RestMethod -Uri ($url + '/api/status') -TimeoutSec 6

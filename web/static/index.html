@@ -83,7 +83,8 @@ async function refreshStatus(){
 function renderSources(sources){
   if(!sources || !sources.length) return '';
   const inner = sources.map(s=>{
-    const meta = [s.source?('来源: '+esc(s.source)):'', s.tags&&s.tags.length?('标签: '+s.tags.join(', ')):'', s.score?('相似度: '+s.score):''].filter(Boolean).join(' · ');
+    const tagArr = Array.isArray(s.tags) ? s.tags : (typeof s.tags==='string' && s.tags ? s.tags.split(',') : []);
+    const meta = [s.source?('来源: '+esc(s.source)):'', tagArr.length?('标签: '+tagArr.map(x=>esc(String(x).trim())).filter(Boolean).join(', ')):'', s.score?('相似度: '+s.score):''].filter(Boolean).join(' · ');
     return `<div class="src"><b>${esc(s.title||s.id)}</b><div class="meta">${meta}</div><div class="snippet">${esc(s.content)}</div></div>`;
   }).join('');
   return `<div class="sources"><details><summary>📎 引用片段（${sources.length}）</summary>${inner}</details></div>`;
