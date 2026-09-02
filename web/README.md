@@ -10,7 +10,7 @@
 ## 启动 / 停止
 
 ```powershell
-# 启动（默认 http://127.0.0.1:8765 ）
+# 启动（默认 http://127.0.0.1:18765 ）
 powershell -ExecutionPolicy Bypass -File web\run.ps1 -Action start
 
 # 停止
@@ -21,7 +21,7 @@ powershell -ExecutionPolicy Bypass -File web\run.ps1 -Action status
 powershell -ExecutionPolicy Bypass -File web\run.ps1 -Action logs
 ```
 
-启动后打开浏览器访问 `http://127.0.0.1:8765` 即可问答，无需 agent 介入。
+启动后打开浏览器访问 `http://127.0.0.1:18765` 即可问答，无需 agent 介入。
 
 ## 后端能力（三级自动降级）
 

@@ -67,6 +67,20 @@ def _count_items(config) -> int:
         return -1
 
 
+def _key_ok(section) -> bool:
+    """判断某服务段是否配置了真实可用的 api_key（忽略空值/环境变量占位符）。"""
+    try:
+        raw = (section or {}).get("api_key")
+        if raw is None:
+            return False
+        v = str(raw).strip()
+        if not v or v.startswith("${"):
+            return False
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 @app.get("/api/status")
 def status():
     rag, err = _get_rag()
@@ -77,21 +91,26 @@ def status():
         err = err or str(e)
     emb = (cfg.get("embedding", {}) if cfg else {}) or {}
     llm = (cfg.get("llm", {}) if cfg else {}) or {}
-    out = {
+    emb_ok = _key_ok(emb)
+    llm_ok = _key_ok(llm)
+    modes = {
+        "rag": bool(emb_ok and llm_ok and rag is not None and getattr(rag, "llm_available", False)),
+        "semantic": bool(emb_ok and rag is not None),
+        "keyword": True,
+    }
+    hint = None
+    if not (emb_ok and llm_ok):
+        hint = ("尚未配置可用的嵌入/大模型 key，当前为关键词检索模式。"
+                "把 key 写入 ~/.localbrain/config.yaml（仓库外文件）后重启服务，即可升级为语义检索/RAG 问答。")
+    return {
         "engine": "localbrain",
         "items": _count_items(cfg) if cfg else -1,
-        "modes": {"rag": False, "semantic": False, "keyword": True},
+        "modes": modes,
         "embedding": {"provider": emb.get("provider"), "model": emb.get("model")},
         "llm": {"provider": llm.get("provider"), "model": llm.get("model")},
         "error": err,
+        "hint": hint,
     }
-    if rag is not None:
-        out["modes"]["rag"] = bool(getattr(rag, "llm_available", False))
-        sem = getattr(rag, "semantic_search", None)
-        out["modes"]["semantic"] = bool(sem is not None and getattr(sem, "embedder", None) is not None)
-        out["llm"]["provider"] = getattr(rag, "llm_provider", llm.get("provider"))
-        out["llm"]["model"] = getattr(rag, "model", llm.get("model"))
-    return out
 
 
 class AskIn(BaseModel):
@@ -152,7 +171,7 @@ if __name__ == "__main__":
               f"请改用 web\\run.ps1 启动（会自动使用 localbrain 的 Python）。")
         sys.exit(1)
     import uvicorn
-    port = int(os.environ.get("PORT", "8765"))
+    port = int(os.environ.get("PORT", "18765"))
     host = os.environ.get("HOST", "127.0.0.1")
     print(f"知识库问答服务: http://{host}:{port}")
     uvicorn.run(app, host=host, port=port, log_level="info")
