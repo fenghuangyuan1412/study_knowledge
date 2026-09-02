@@ -1,0 +1,29 @@
+services:
+  kb-web:
+    build: .
+    image: study-knowledge-kb-web:local
+    container_name: kb-web
+    ports:
+      - "${KB_PORT:-18765}:18765"
+    environment:
+      PORT: "18765"
+      HOST: "0.0.0.0"
+      # 模型服务地址（默认指向宿主机的 Ollama；Windows/macOS Docker Desktop 与 WSL2 经 host.docker.internal 可达；
+      # 纯 Linux Docker 可改为 http://172.17.0.1:11434 或 --network host）
+      KB_EMBED_MODEL: ${KB_EMBED_MODEL:-ollama/bge-m3}
+      KB_EMBED_BASE: ${KB_EMBED_BASE:-http://host.docker.internal:11434}
+      KB_LLM_MODEL: ${KB_LLM_MODEL:-ollama/qwen3.5:9b}
+      KB_LLM_BASE: ${KB_LLM_BASE:-http://host.docker.internal:11434}
+      KB_API_KEY: ${KB_API_KEY:-not-needed}      # new-api 场景填其 token；Ollama 填 not-needed
+      KB_THINK: ${KB_THINK:-false}               # qwen3 类思考模型必须 false
+      # 首次启动时导入的 md 目录（可选，缺省不导入；目录存在且含 .md 才生效）
+      KB_IMPORT_DIR: ${KB_IMPORT_DIR:-/kb-in}
+    volumes:
+      - kb-data:/root/.knowledge-base            # 向量库/元数据持久化
+      - ./kb:/kb-in:ro                            # 知识内容（可选挂载，供 KB_IMPORT_DIR 导入）
+    extra_hosts:
+      - "host.docker.internal:host-gateway"      # Linux 下让容器访问宿主机服务
+    restart: unless-stopped
+
+volumes:
+  kb-data:

@@ -1,0 +1,15 @@
+# 个人内容与运行期文件不进入镜像
+.git
+.gitignore
+.gitattributes
+kb
+agent.md
+README.md
+web/.runtime
+*.log
+__pycache__
+*.pyc
+.dsh
+Dockerfile
+docker-compose.yml
+.dockerignore
