@@ -3,33 +3,55 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>知识库问答 · AI软件测试</title>
+<title>知识库问答</title>
 <style>
   :root {
     --bg:#0f1420; --panel:#171e2e; --panel2:#1e2740; --line:#2a3552;
-    --text:#e8edf7; --muted:#8fa0bf; --accent:#4f8cff; --ok:#34c77b; --warn:#f0a83c; --bad:#e05d5d;
+    --text:#e8edf7; --muted:#8fa0bf; --accent:#4f8cff; --ok:#34c77b; --bad:#e05d5d;
   }
   * { box-sizing:border-box; }
   body { margin:0; font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif; background:var(--bg); color:var(--text); height:100vh; display:flex; flex-direction:column; }
-  header { display:flex; align-items:center; gap:14px; padding:12px 20px; border-bottom:1px solid var(--line); background:var(--panel); flex-wrap:wrap; }
-  header h1 { font-size:17px; margin:0; font-weight:600; }
+  header { display:flex; align-items:center; gap:12px; padding:10px 18px; border-bottom:1px solid var(--line); background:var(--panel); flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0; font-weight:600; }
   .sub { color:var(--muted); font-size:12px; }
-  .badge { font-size:12px; padding:3px 10px; border-radius:20px; border:1px solid var(--line); background:var(--panel2); color:var(--muted); }
+  .badge { font-size:12px; padding:3px 10px; border-radius:20px; border:1px solid var(--line); background:var(--panel2); color:var(--muted); white-space:nowrap; }
   .badge.on { color:var(--ok); border-color:var(--ok); }
-  #main { flex:1; overflow-y:auto; padding:18px 20px; display:flex; flex-direction:column; gap:14px; max-width:860px; width:100%; margin:0 auto; }
-  .msg { max-width:78%; padding:11px 14px; border-radius:14px; line-height:1.65; white-space:pre-wrap; word-break:break-word; font-size:14.5px; }
-  .msg.user { align-self:flex-end; background:var(--accent); color:#fff; border-bottom-right-radius:4px; }
+  #kbSel { background:var(--panel2); color:var(--text); border:1px solid var(--line); border-radius:8px; padding:4px 8px; font-size:13px; outline:none; cursor:pointer; }
+  #main { flex:1; overflow-y:auto; padding:18px 20px; display:flex; flex-direction:column; gap:14px; max-width:900px; width:100%; margin:0 auto; }
+  .msg { max-width:80%; padding:11px 14px; border-radius:14px; line-height:1.7; word-break:break-word; font-size:14.5px; }
+  .msg.user { align-self:flex-end; background:var(--accent); color:#fff; border-bottom-right-radius:4px; white-space:pre-wrap; }
   .msg.bot { align-self:flex-start; background:var(--panel2); border:1px solid var(--line); border-bottom-left-radius:4px; }
-  .msg.system { align-self:center; background:transparent; color:var(--muted); font-size:12.5px; border:1px dashed var(--line); }
-  .sources { align-self:flex-start; width:78%; max-width:78%; }
+  .msg.system { align-self:center; background:transparent; color:var(--muted); font-size:12.5px; border:1px dashed var(--line); text-align:center; max-width:92%; }
+
+  /* ===== Markdown 渲染样式（仅 .msg.bot 内） ===== */
+  .msg.bot p { margin:6px 0; }
+  .msg.bot h1,.msg.bot h2,.msg.bot h3,.msg.bot h4,.msg.bot h5,.msg.bot h6 { margin:12px 0 6px; line-height:1.4; color:#fff; font-weight:600; }
+  .msg.bot h1 { font-size:17px; } .msg.bot h2 { font-size:16px; } .msg.bot h3 { font-size:15px; }
+  .msg.bot h4,.msg.bot h5,.msg.bot h6 { font-size:14px; }
+  .msg.bot ul,.msg.bot ol { margin:6px 0; padding-left:22px; }
+  .msg.bot li { margin:3px 0; }
+  .msg.bot strong { color:#fff; font-weight:600; }
+  .msg.bot em { color:#cfd8ea; }
+  .msg.bot a { color:#6ea8ff; text-decoration:none; }
+  .msg.bot a:hover { text-decoration:underline; }
+  .msg.bot blockquote { border-left:3px solid var(--accent); margin:8px 0; padding:2px 12px; color:var(--muted); }
+  .msg.bot pre { background:#0c1220; border:1px solid var(--line); border-radius:8px; padding:10px 12px; overflow-x:auto; font-size:12.5px; line-height:1.55; }
+  .msg.bot code { font-family:Consolas,"Courier New",monospace; background:#0c1220; border-radius:4px; padding:1px 5px; font-size:12.5px; }
+  .msg.bot pre code { padding:0; background:none; }
+  .msg.bot hr { border:none; border-top:1px dashed var(--line); margin:10px 0; }
+  .msg.bot table { border-collapse:collapse; margin:8px 0; font-size:13px; }
+  .msg.bot th,.msg.bot td { border:1px solid var(--line); padding:5px 9px; }
+  .msg.bot th { background:var(--panel); }
+
+  .sources { align-self:flex-start; width:80%; max-width:80%; }
   details { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:8px 12px; margin-top:4px; }
   summary { cursor:pointer; color:var(--accent); font-size:13px; }
   .src { padding:7px 4px; border-top:1px dashed var(--line); font-size:13px; }
   .src b { color:var(--text); }
   .src .meta { color:var(--muted); font-size:12px; }
-  .src .snippet { color:#c3cde2; margin-top:4px; font-size:12.5px; }
+  .src .snippet { color:#c3cde2; margin-top:4px; font-size:12.5px; white-space:pre-wrap; }
   footer { border-top:1px solid var(--line); background:var(--panel); padding:12px 20px; }
-  .box { max-width:860px; margin:0 auto; display:flex; gap:10px; }
+  .box { max-width:900px; margin:0 auto; display:flex; gap:10px; }
   textarea { flex:1; resize:none; background:var(--panel2); color:var(--text); border:1px solid var(--line); border-radius:10px; padding:10px 12px; font-size:14.5px; font-family:inherit; outline:none; height:52px; }
   textarea:focus { border-color:var(--accent); }
   button { background:var(--accent); color:#fff; border:none; border-radius:10px; padding:0 22px; font-size:14.5px; cursor:pointer; }
@@ -42,76 +64,135 @@
 <body>
 <header>
   <h1>📚 知识库问答</h1>
-  <span class="sub">AI软件测试 · localbrain</span>
+  <select id="kbSel" title="切换知识库"></select>
   <span id="mode" class="badge">检测中…</span>
   <span id="items" class="badge">条目：-</span>
-  <span class="sub" style="margin-left:auto">数据目录 ~/.knowledge-base（仓库外）</span>
+  <span class="sub" style="margin-left:auto">localbrain · 数据在 ~/.knowledge-base*</span>
 </header>
 <div id="main">
-  <div class="msg system">直接提问即可（无需经过 agent）。回答基于你沉淀的知识库内容，附引用片段；未配置 AI 服务时自动降级为「检索相关片段」。</div>
+  <div class="msg system">直接提问即可。AI 回答会以 Markdown 格式展示；可在上方切换知识库（AI 软件测试 / 毛选）。</div>
 </div>
 <footer>
   <div class="box">
-    <textarea id="q" placeholder="例：被测项目介绍里，测试人员为什么要先熟悉业务？给我讲讲 AI 生成测试用例的思路…" rows="1"></textarea>
+    <textarea id="q" placeholder="输入问题，Enter 发送…" rows="1"></textarea>
     <button id="send">发送</button>
   </div>
   <div class="hint" id="hint"></div>
 </footer>
 <script>
-const $main = document.getElementById('main');
-const $q = document.getElementById('q');
-const $send = document.getElementById('send');
-const $mode = document.getElementById('mode');
-const $items = document.getElementById('items');
+const $main=document.getElementById('main'), $q=document.getElementById('q'), $send=document.getElementById('send');
+const $mode=document.getElementById('mode'), $items=document.getElementById('items'), $kbSel=document.getElementById('kbSel');
+const STORAGE='kbActive';
+let kb = localStorage.getItem(STORAGE) || 'ai-software-testing';
 
-function esc(s){return s.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
-function addMsg(role, html){const d=document.createElement('div'); d.className='msg '+role; d.innerHTML=html; $main.appendChild(d); $main.scrollTop=$main.scrollHeight; return d;}
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+
+/* ---------- 轻量 Markdown -> HTML（离线、无第三方依赖） ---------- */
+function inlineMd(raw){
+  let s = esc(raw);
+  s = s.replace(/`([^`\n]+)`/g, (m,c)=>'<code>'+c+'</code>');
+  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  s = s.replace(/__([^_]+)__/g, '<strong>$1</strong>');
+  s = s.replace(/(^|[^*\w])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+  s = s.replace(/(^|[^_\w])_([^_\n]+)_/g, '$1<em>$2</em>');
+  return s;
+}
+function mdToHtml(text){
+  const lines=String(text||'').replace(/\r\n?/g,'\n').split('\n');
+  const out=[]; let i=0;
+  const fence=()=>{const buf=[]; i++; while(i<lines.length && !/^```/.test(lines[i])){buf.push(lines[i]); i++;} i++;
+    out.push('<pre><code>'+esc(buf.join('\n'))+'</code></pre>');};
+  const quote=()=>{const buf=[]; while(i<lines.length && /^\s*>\s?/.test(lines[i])){buf.push(lines[i].replace(/^\s*>\s?/,'')); i++;}
+    out.push('<blockquote>'+mdToHtml(buf.join('\n'))+'</blockquote>');};
+  const list=()=>{
+    const ordered=/^\s*\d+[.、)]\s+/.test(lines[i]);
+    const items=[];
+    while(i<lines.length){const L=lines[i];
+      const u=L.match(/^\s*[-*+]\s+(.*)$/), o=L.match(/^\s*\d+[.、)]\s+(.*)$/);
+      if(ordered && !o) break; if(!ordered && !u) break;
+      items.push((ordered?o[1]:u[1]).trim()); i++;
+      while(i<lines.length && /^\s+\S/.test(lines[i]) && !/^\s*[-*+]/.test(lines[i]) && !/^\s*\d+[.、)]/.test(lines[i])){ items[items.length-1]+=' '+lines[i].trim(); i++; }
+      if(i<lines.length && lines[i].trim()===''){ i++; break; }
+    }
+    const tag=ordered?'ol':'ul';
+    out.push('<'+tag+'>'+items.map(x=>'<li>'+inlineMd(x)+'</li>').join('')+'</'+tag+'>');
+  };
+  while(i<lines.length){
+    const L=lines[i];
+    if(L.trim()===''){i++; continue;}
+    const h=L.match(/^(#{1,6})\s+(.*)$/);
+    if(h){ out.push('<h'+h[1].length+'>'+inlineMd(h[2])+'</h'+h[1].length+'>'); i++; continue; }
+    if(/^```/.test(L.trim())){ fence(); continue; }
+    if(/^\s*>\s?/.test(L)){ quote(); continue; }
+    if(/^\s*([-*_])\s*(\1\s*){2,}$/.test(L)){ out.push('<hr>'); i++; continue; }
+    if(/^\s*[-*+]\s+/.test(L) || /^\s*\d+[.、)]\s+/.test(L)){ list(); continue; }
+    const buf=[]; while(i<lines.length){ const T=lines[i];
+      if(T.trim()==='' || /^```/.test(T.trim()) || /^\s*>\s?/.test(T) ||
+         /^(#{1,6})\s+/.test(T) || /^\s*[-*+]\s+/.test(T) || /^\s*\d+[.、)]\s+/.test(T) ||
+         /^\s*([-*_])\s*(\1\s*){2,}$/.test(T)) break;
+      buf.push(T); i++; }
+    if(buf.length) out.push('<p>'+inlineMd(buf.join(' '))+'</p>');
+  }
+  return out.join('');
+}
+
+function addMsg(role, html){ const d=document.createElement('div'); d.className='msg '+role; d.innerHTML=html; $main.appendChild(d); $main.scrollTop=$main.scrollHeight; return d; }
 
 async function refreshStatus(){
   try{
-    const r = await fetch('/api/status'); const s = await r.json();
-    let txt='未知', cls='';
-    if(s.error){ txt='引擎异常'; cls='bad'; }
-    else if(s.modes.rag){ txt='RAG 生成式问答'; cls='on'; }
-    else if(s.modes.semantic){ txt='语义检索（无LLM）'; cls=''; }
-    else { txt='关键词检索'; cls=''; }
-    $mode.textContent = txt; $mode.className='badge '+cls;
-    $items.textContent = '条目：' + (s.items>=0?s.items:'?');
+    const s=await (await fetch('/api/status')).json();
+    const opts=s.kbs.map(k=>'<option value="'+k.id+'"'+(k.id===kb?' selected':'')+'>'+esc(k.label)+'</option>').join('');
+    if($kbSel.innerHTML!==opts){ $kbSel.innerHTML=opts; }
+    const cur=s.kbs.find(k=>k.id===kb)||s.kbs[0];
+    if(cur){
+      let txt='未知',cls='';
+      if(cur.modes.rag){ txt='RAG 生成式问答'; cls='on'; }
+      else if(cur.modes.semantic){ txt='语义检索（无LLM）'; cls=''; }
+      else { txt='关键词检索'; cls=''; }
+      $mode.textContent=txt; $mode.className='badge '+cls;
+      $items.textContent='条目：'+(cur.items>=0?cur.items:'?');
+    }
   }catch(e){ $mode.textContent='服务未连接'; }
+}
+
+function modePrefix(j){
+  if(j.mode==='semantic') return '（当前无大模型配置：以下为语义检索到的相关片段，非 AI 总结）\n\n';
+  if(j.mode==='keyword') return '（未配置嵌入服务：以下为关键词检索片段）\n\n';
+  if(j.mode==='none') return '（知识库中未找到相关内容）\n\n';
+  return '';
+}
+
+async function ask(){
+  const q=$q.value.trim(); if(!q) return;
+  $q.value=''; $send.disabled=true; $send.innerHTML='<span class="spin"></span>';
+  addMsg('user', esc(q));
+  const wait=addMsg('bot','思考中…');
+  try{
+    const r=await fetch('/api/ask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q, kb:kb, top_k:6})});
+    const j=await r.json();
+    if(!r.ok){ wait.innerHTML='<p>错误：'+esc(j.detail||r.status)+'</p>'; return; }
+    wait.innerHTML = mdToHtml(modePrefix(j) + (j.answer||''));
+    wait.insertAdjacentHTML('afterend', renderSources(j.sources));
+  }catch(e){ wait.innerHTML='<p>请求失败：'+esc(e)+'</p>'; }
+  finally{ $send.disabled=false; $send.textContent='发送'; $q.focus(); }
 }
 
 function renderSources(sources){
   if(!sources || !sources.length) return '';
-  const inner = sources.map(s=>{
-    const tagArr = Array.isArray(s.tags) ? s.tags : (typeof s.tags==='string' && s.tags ? s.tags.split(',') : []);
-    const meta = [s.source?('来源: '+esc(s.source)):'', tagArr.length?('标签: '+tagArr.map(x=>esc(String(x).trim())).filter(Boolean).join(', ')):'', s.score?('相似度: '+s.score):''].filter(Boolean).join(' · ');
-    return `<div class="src"><b>${esc(s.title||s.id)}</b><div class="meta">${meta}</div><div class="snippet">${esc(s.content)}</div></div>`;
+  const inner=sources.map(s=>{
+    const tagArr=Array.isArray(s.tags)?s.tags:(typeof s.tags==='string'&&s.tags?s.tags.split(','):[]);
+    const meta=[s.source?('来源: '+esc(s.source)):'', tagArr.length?('标签: '+tagArr.map(x=>esc(String(x).trim())).filter(Boolean).join(', ')):'', s.score?('相似度: '+s.score):''].filter(Boolean).join(' · ');
+    return '<div class="src"><b>'+esc(s.title||s.id)+'</b><div class="meta">'+meta+'</div><div class="snippet">'+esc(s.content)+'</div></div>';
   }).join('');
-  return `<div class="sources"><details><summary>📎 引用片段（${sources.length}）</summary>${inner}</details></div>`;
+  return '<div class="sources"><details><summary>📎 引用片段（'+sources.length+'）</summary>'+inner+'</details></div>';
 }
 
-async function ask(){
-  const q = $q.value.trim(); if(!q) return;
-  $q.value=''; $send.disabled=true; $send.innerHTML='<span class="spin"></span>';
-  addMsg('user', esc(q));
-  const wait = addMsg('bot','思考中…');
-  try{
-    const r = await fetch('/api/ask', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({question:q, top_k:6})});
-    const j = await r.json();
-    if(!r.ok){ wait.textContent = '错误：' + (j.detail||r.status); return; }
-    let prefix='';
-    if(j.mode==='semantic') prefix='（当前无大模型配置：以下为语义检索到的相关片段，非 AI 总结）\n\n';
-    if(j.mode==='keyword') prefix='（未配置嵌入服务：以下为关键词检索片段）\n\n';
-    if(j.mode==='none') prefix='（知识库中未找到相关内容）\n\n';
-    wait.textContent = prefix + (j.answer||'');
-    wait.insertAdjacentHTML('afterend', renderSources(j.sources));
-  }catch(e){ wait.textContent = '请求失败：' + e; }
-  finally{ $send.disabled=false; $send.textContent='发送'; $q.focus(); }
-}
-
-$send.onclick = ask;
-$q.addEventListener('keydown', e=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); ask(); }});
-refreshStatus(); setInterval(refreshStatus, 15000); $q.focus();
+$send.onclick=ask;
+$q.addEventListener('keydown',e=>{ if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); ask(); }});
+$kbSel.addEventListener('change',()=>{ kb=$kbSel.value; localStorage.setItem(STORAGE,kb);
+  addMsg('system','已切换到知识库：<b>'+esc($kbSel.options[$kbSel.selectedIndex].text)+'</b>'); refreshStatus(); });
+refreshStatus(); setInterval(refreshStatus,15000); $q.focus();
 </script>
 </body>
 </html>
