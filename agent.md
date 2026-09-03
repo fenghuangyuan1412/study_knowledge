@@ -21,6 +21,7 @@
 - **内容载体**：仓库内 `kb/<方向>/batch-<编号>/items/*.md`（UTF-8 Markdown），一份内容 = 一条知识
   - 每次向知识库添加内容：**先把 md 提交进 git 分支，再把同一份 md `localbrain collect file add` 收进向量库**
 - **Web 问答页**：`web/`（main 分支维护），后端优先 RAG（大模型作答），降级为语义检索 / 关键词检索
+- **Skill 层（agent 知识处理能力）**：`mao-selected-works`（全文建索引与检索：SQLite FTS5，可选 bge-m3 向量 + 重排混合检索）、`wenshu` 文枢（文献导入 / 段落锚点 / 引文格式化 / 谱系图谱 / 检索问答，可溯源不编造）；语料与索引存放于本地 agent skills 目录（**不入 git**），毛选用法见 `kb/maoxuan/README.md`
 - **大方向改动**（统一在 `agent.md` 中维护）：前端 / 后端改动；切换不同知识库方向（软件测试、模型微调等）
 
 ## 三、文件约定
@@ -65,3 +66,4 @@
 
 - **第一次提交（信息：agent修改）**：创建本文件，确立「agent.md 管方向 + 主题 md 管内容」的知识库工作方式。
 - **第二次提交（信息：结构-接入 localbrain 向量库与 Web 问答页，确立 git 分支合流工作流）**：接入 localbrain 向量引擎；确立 `kb/<方向>/batch-*/items` 内容目录与「分支添加 → 同意后合入 main → 推送 origin」工作流；新增 `web/` 本地问答页；沉淀第一批 AI 软件测试知识。
+- **本次提交（信息：接入毛选全文检索与文枢溯源 skill，README 改为可分享版本）**：DSH 本机接入 `mao-selected-works` 与 `wenshu` 两个 skill，毛选 1–7 卷全文语料/索引进本机 skills 目录（不入 git），`kb/maoxuan/README.md` 补齐「全文语料与可溯源检索」用法；`README.md` 去除本地结构细节，改为面向分享的项目说明（组件 / 部署更详细）。
