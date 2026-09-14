@@ -71,14 +71,37 @@ if ($Action -eq 'start') {
         }
         catch { }
         Write-Host ('started (PID ' + $p.Id + '): ' + $url)
-        try {
-            $null = Invoke-RestMethod -Uri ($url + '/api/status') -TimeoutSec 6
-            Write-Host 'health check OK.'
+        # health check via curl.exe: Invoke-RestMethod tries to negotiate the
+        # 401 challenge (WWW-Authenticate) and can hang instead of failing fast
+        $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
+        if ($curl) {
+            $hargs = @('-s', '-o', 'NUL', '-w', '%{http_code}', '--max-time', '6', ($url + '/api/status'))
+            if ($env:KB_ACCESS_TOKEN) { $hargs += @('-H', ('X-KB-Token: ' + $env:KB_ACCESS_TOKEN)) }
+            # the uv wrapper spawns the real interpreter, so give it a few tries
+            $code = '000'
+            foreach ($try in 1..8) {
+                $code = (& curl.exe @hargs 2>$null | Out-String).Trim()
+                if ($code -eq '200' -or $code -eq '401') { break }
+                Start-Sleep -Seconds 2
+            }
+            if ($code -eq '200') { Write-Host 'health check OK.' }
+            elseif ($code -eq '401') {
+                Write-Host 'health check: 401 - service is up but auth does not accept this token.' -ForegroundColor Yellow
+            }
+            else {
+                Write-Host ('health check returned ' + $code + '; if it stays unavailable, check logs:')
+                Write-Host ('  ' + $logFile)
+                Write-Host ('  ' + $errFile)
+            }
         }
-        catch {
-            Write-Host 'starting; if still unavailable later, check logs:'
-            Write-Host ('  ' + $logFile)
-            Write-Host ('  ' + $errFile)
+        else {
+            Write-Host 'curl.exe not found; skipping health check.'
+        }
+        if ($env:KB_ACCESS_TOKEN) {
+            Write-Host '[auth] token enabled (from KB_ACCESS_TOKEN).'
+        }
+        else {
+            Write-Host '[auth] KB_ACCESS_TOKEN not set - local use only; set it before exposing via tunnel.' -ForegroundColor Yellow
         }
     }
 }

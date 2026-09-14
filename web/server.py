@@ -11,16 +11,19 @@
 """
 from __future__ import annotations
 
+import hmac
 import logging
 import os
 import re
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 HERE = Path(__file__).resolve().parent
@@ -28,13 +31,111 @@ STATIC = HERE / "static"
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("kb-web")
 
-app = FastAPI(title="知识库问答（localbrain）", version="0.2.0")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app = FastAPI(title="知识库问答（localbrain）", version="0.3.0")
+
+# --------------------------------------------------------------------------
+# 访问控制（方案 A：经隧道暴露到公网，必须带口令）
+#   口令从环境变量 KB_ACCESS_TOKEN 注入，绝不写入入库文件（见 agent.md 第六节）。
+#   多个口令用英文逗号分隔（便于给不同朋友各自一个，事后可单独作废）。
+# --------------------------------------------------------------------------
+ACCESS_TOKEN = (os.environ.get("KB_ACCESS_TOKEN") or "").strip()
+_TOKENS = {t.strip() for t in ACCESS_TOKEN.split(",") if t.strip()}
+RATE_LIMIT = int(os.environ.get("KB_RATE_LIMIT", "60"))            # 每 IP 每分钟 /api/ask 上限
+AUTH_FAIL_LIMIT = int(os.environ.get("KB_AUTH_FAIL_LIMIT", "10"))  # 每 IP 每分钟口令试错上限
+RATE_WINDOW = 60.0
+TRUST_PROXY = os.environ.get("KB_TRUST_PROXY", "1") == "1"
+CORS_ORIGINS = [o.strip() for o in (os.environ.get("KB_CORS_ORIGINS") or "").split(",") if o.strip()]
+
+# 生成并发闸门：本机 GPU 显存有限（实测 qwen3.5:9b 并发会 ROCm OOM 并静默降级），
+# 多个朋友同时提问时必须排队，否则表现为"AI 回答忽然变成片段列表"。
+MAX_CONCURRENT = int(os.environ.get("KB_MAX_CONCURRENT", "2"))
+QUEUE_TIMEOUT = float(os.environ.get("KB_QUEUE_TIMEOUT", "180"))
+_gen_slots = threading.BoundedSemaphore(max(1, MAX_CONCURRENT))
+_waiting = [0]
+
+_rate_lock = threading.Lock()
+_rate_hits: Dict[str, list] = {}
+_auth_fails: Dict[str, list] = {}
+
+
+def _client_ip(request: Request) -> str:
+    """经隧道后取真实客户端 IP（cloudflared 会带 CF-Connecting-IP）。"""
+    if TRUST_PROXY:
+        for h in ("cf-connecting-ip", "x-forwarded-for", "x-real-ip"):
+            v = request.headers.get(h)
+            if v:
+                return v.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _over_limit(bucket: Dict[str, list], key: str, limit: int) -> bool:
+    """滑动窗口计数，返回 True 表示本次已超限（且不计入）。"""
+    now = time.time()
+    cutoff = now - RATE_WINDOW
+    with _rate_lock:
+        ts = bucket.setdefault(key, [])
+        while ts and ts[0] < cutoff:
+            ts.pop(0)
+        if len(ts) >= limit:
+            return True
+        ts.append(now)
+        if len(bucket) > 4096:  # 防止字典无限增长
+            for k in [k for k, v in bucket.items() if not v or v[-1] < cutoff]:
+                bucket.pop(k, None)
+        return False
+
+
+def _token_ok(request: Request) -> bool:
+    """口令来源优先级：X-KB-Token 头 → Authorization: Bearer → ?token= → cookie。"""
+    if not _TOKENS:
+        return True  # 未设口令（纯本机使用）
+    supplied = (request.headers.get("x-kb-token") or "").strip()
+    if not supplied:
+        auth = (request.headers.get("authorization") or "").strip()
+        if auth.lower().startswith("bearer "):
+            supplied = auth[7:].strip()
+    if not supplied:
+        supplied = (request.query_params.get("token") or "").strip()
+    if not supplied:
+        supplied = (request.cookies.get("kb_token") or "").strip()
+    return any(hmac.compare_digest(supplied, t) for t in _TOKENS)
+
+
+@app.middleware("http")
+async def _guard(request: Request, call_next):
+    path = request.url.path
+    # 页面与 PWA 静态资源放行（口令界面必须能加载）
+    if request.method == "GET" and not path.startswith("/api/"):
+        return await call_next(request)
+
+    ip = _client_ip(request)
+
+    if not _token_ok(request):
+        if _over_limit(_auth_fails, ip, AUTH_FAIL_LIMIT):
+            return JSONResponse({"detail": "口令尝试次数过多，请稍后再试"}, status_code=429)
+        return JSONResponse(
+            {"detail": "需要访问口令：请在页面输入，或带 X-KB-Token 头"},
+            status_code=401,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if path == "/api/ask" and _over_limit(_rate_hits, ip, RATE_LIMIT):
+        return JSONResponse(
+            {"detail": f"请求过于频繁（上限 {RATE_LIMIT} 次/分钟），请稍后再试"},
+            status_code=429,
+        )
+
+    return await call_next(request)
+
+
+# 跨域：默认不开放；仅当显式配置 KB_CORS_ORIGINS 时按白名单放行
+if CORS_ORIGINS:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=CORS_ORIGINS,
+        allow_methods=["GET", "POST"],
+        allow_headers=["Content-Type", "X-KB-Token", "Authorization"],
+    )
 
 # --------------------------------------------------------------------------
 # 多知识库配置
@@ -201,6 +302,8 @@ def status():
         "default_kb": DEFAULT_KB,
         "kbs": kbs,
         "error": error,
+        # 排队情况：朋友多时能一眼看出是不是在排队/卡显存
+        "queue": {"max_concurrent": MAX_CONCURRENT, "waiting": _waiting[0]},
     }
 
 
@@ -227,8 +330,23 @@ def ask(body: AskIn):
     if emb_ok and llm_ok:
         rag = _rag_for(kb)
         if rag is not None:
+            # 生成并发闸门：显存有限，排队优于并发压垮 GPU
+            _waiting[0] += 1
+            got = _gen_slots.acquire(timeout=QUEUE_TIMEOUT)
+            _waiting[0] -= 1
+            if not got:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"当前排队较多（已等待 {int(QUEUE_TIMEOUT)} 秒），请稍后再试",
+                )
             try:
                 r = rag.query_with_fallback(q, top_k=top_k)
+            except Exception as e:  # noqa: BLE001
+                log.warning("RAG 查询失败(kb=%s)，降级关键词检索: %s", kb, e)
+                r = None
+            finally:
+                _gen_slots.release()
+            if r is not None:
                 answer = (r.answer or "").strip()
                 mode = "rag"
                 if answer.startswith("[LLM unavailable]"):
@@ -241,9 +359,9 @@ def ask(body: AskIn):
                     mode = "error"
                 return {"mode": mode, "answer": answer,
                         "sources": _to_source_list(r.sources, cfg),
-                        "question": q, "kb": kb}
-            except Exception as e:  # noqa: BLE001
-                log.warning("RAG 查询失败(kb=%s)，降级关键词检索: %s", kb, e)
+                        "question": q, "kb": kb,
+                        # 已配好 key 却降级 => 多半是模型显存/服务临时不可用，而不是"没配"
+                        "degraded": mode in ("semantic", "keyword", "error")}
 
     # 模式二/三：关键词检索
     try:
@@ -266,6 +384,10 @@ def index():
     return FileResponse(STATIC / "index.html")
 
 
+# 静态资源（PWA manifest / 图标）挂在 /static；放在最后注册，保证 /api 路由优先匹配
+app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
+
+
 if __name__ == "__main__":
     try:
         import kb  # noqa: F401
@@ -277,4 +399,9 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", "18765"))
     host = os.environ.get("HOST", "127.0.0.1")
     print(f"知识库问答服务: http://{host}:{port}")
+    if _TOKENS:
+        print(f"[访问控制] 已启用口令（{len(_TOKENS)} 个），限流 {RATE_LIMIT} 次/分钟/IP")
+    else:
+        print("[访问控制] 未设 KB_ACCESS_TOKEN —— 仅供本机使用；"
+              "经隧道暴露前必须先设口令（web\\tunnel.ps1 会拒绝无口令启动）")
     uvicorn.run(app, host=host, port=port, log_level="warning")

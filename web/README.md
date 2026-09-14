@@ -64,3 +64,129 @@ powershell -ExecutionPolicy Bypass -File web\run.ps1 -Action logs
   并填写 `embedding.openai_compatible.{api_key,base_url,model}` 与 `llm.openai_compatible.{api_key,base_url,model}`。
 
 改完重启服务即可；页面状态栏会自动反映新模式。
+
+
+---
+
+## 公网访问（方案 A：隧道穿透 + 常态化部署）
+
+定位：**本人自用 + 朋友内测**。不迁移数据、不部署云模型——把自己电脑上已跑通的服务映射到公网，Ollama 仍然只在本机跑。方向约定见仓库根目录 `agent.md` 第六节。
+
+- **当前接线**：Tailscale Funnel → 本机 `127.0.0.1:18765`
+- **永久地址**：`https://pc-202412121713.tail69ff66.ts.net/`（**固定域名，不随重启变化**）
+
+### 一次性准备
+
+```powershell
+# 1) 设访问口令（持久化到用户环境变量，绝不入库）
+$alphabet='abcdefghijkmnpqrstuvwxyz23456789'
+$rng=New-Object System.Security.Cryptography.RNGCryptoServiceProvider
+$b=New-Object byte[] 14; $rng.GetBytes($b)
+$token=-join ($b | ForEach-Object { $alphabet[$_ % $alphabet.Length] })
+[Environment]::SetEnvironmentVariable('KB_ACCESS_TOKEN',$token,'User')
+$token   # 记下来，发给朋友
+
+# 2) 装 Tailscale（本机没有 winget，用 MSI 静默装）
+#    下载 https://pkgs.tailscale.com/stable/tailscale-setup-1.102.4-amd64.msi
+#    msiexec /i tailscale-setup-1.102.4-amd64.msi /qn /norestart
+#    装完服务自动启动且开机自启；再登录一次（会弹浏览器）：
+& "C:\Program Files\Tailscale\tailscale.exe" up
+
+# 3) 开 Funnel（**首次必须由账号主人**在浏览器点一次授权，链接由命令打印）
+& "C:\Program Files\Tailscale\tailscale.exe" funnel --bg --yes 18765
+
+# 4) 注册开机自启 + 看门狗
+powershell -ExecutionPolicy Bypass -File web\deploy.ps1 -Action install-task
+```
+
+### 日常使用
+
+| 命令 | 作用 |
+| --- | --- |
+| `web\deploy.ps1 -Action ensure` | **幂等一键恢复**：起服务 → 开隧道 → 校验守卫 → 记录地址（计划任务每 5 分钟自动跑） |
+| `web\deploy.ps1 -Action status` | 一眼看清 服务 / 守卫 / 隧道 / 公网地址 / 计划任务 状态 |
+| `web\deploy.ps1 -Action url` | 只输出公网地址（供脚本取用） |
+| `web\deploy.ps1 -Action stop` | 停隧道（公网立刻不可达，本机服务继续跑） |
+| `web\deploy.ps1 -Action install-task` | 注册计划任务：登录时 + 每 5 分钟自动 `ensure` |
+| `web\deploy.ps1 -Action uninstall-task` | 移除计划任务 |
+| `web\run.ps1 -Action start\|stop\|status\|logs` | 只管本机服务 |
+| `web\tunnel.ps1 -Action start\|stop\|status\|url\|logs` | 备用：cloudflared 快速隧道（地址每次重启会变） |
+
+**开机自启是怎么实现的**：Tailscale 本身是 Windows 服务（`StartType=Automatic`），开机即连；计划任务 `StudyKnowledge-KB-AutoDeploy` 在**登录时**和**每 5 分钟**执行 `deploy.ps1 -Action ensure`。所以无论重启还是隧道掉线，最多 5 分钟自动恢复。实测从「服务+tunnel 全停」到完全恢复约 **10 秒**。
+
+### 环境变量
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `KB_ACCESS_TOKEN` | 空 | **上线必设**。访问口令；多个用英文逗号分隔（可给每个朋友一个，事后单独作废） |
+| `KB_RATE_LIMIT` | 60 | 每 IP 每分钟 `/api/ask` 上限 |
+| `KB_AUTH_FAIL_LIMIT` | 10 | 每 IP 每分钟口令试错上限（防爆破） |
+| `KB_MAX_CONCURRENT` | 2 | 同时进行的模型生成数（**显存保护**，见踩坑 4） |
+| `KB_QUEUE_TIMEOUT` | 180 | 排队等待上限（秒），超时返回 503 |
+| `KB_CORS_ORIGINS` | 空 | 默认不开放跨域；填白名单（逗号分隔）才放行 |
+| `KB_TRUST_PROXY` | 1 | 经隧道/反代时从 `CF-Connecting-IP` / `X-Forwarded-For` 取真实客户端 IP |
+
+### 手机端
+
+- 手机浏览器打开公网地址 → 输口令 → 浏览器菜单选「添加到主屏幕」，即成为全屏 App（PWA，已配 manifest 与图标）。
+- 后续写**安卓端**时直接复用同一套 API 口径，**不需要另建后端**：
+  - `GET /api/status`（带 `X-KB-Token` 头）
+  - `POST /api/ask`，body：`{"question":"...","kb":"ai-software-testing","top_k":6}`
+  - 未带口令 401；超频 429；排队超时 503；响应里的 `degraded: true` 表示"已配模型但本次降级"。
+
+### 部署到云服务器（Docker / 宝塔）
+
+隧道方案适用于「跑在自己电脑上」。如果以后要搬到云服务器，本项目已经具备容器化能力：
+
+```powershell
+# 通用 Docker 部署（云服务器上）
+$env:KB_ACCESS_TOKEN="<你的口令>"        # 必填，否则等于裸奔
+docker compose up --build -d             # 默认 http://<服务器IP>:18765
+```
+
+要点：
+
+1. **云服务器有公网 IP，就不需要隧道了**——直接 `Nginx/Caddy 反代 + 域名 + HTTPS`。
+   - **国内服务器绑域名必须 ICP 备案**（约 1–3 周）；不想备案就用境外/香港节点（但境内访问质量会打折）。
+   - Caddy 最省事：`your.domain { reverse_proxy 127.0.0.1:18765 }`，自动申请证书。
+2. **模型服务怎么接**（`KB_*_BASE` 决定）：
+   - 继续用本机 Ollama → 服务器上不可行（除非本机暴露给服务器，不推荐）；
+   - 换成 OpenAI 兼容云 API（阿里云百炼 DashScope / 硅基流动等）→ 填 `KB_EMBED_BASE`、`KB_LLM_BASE`、`KB_API_KEY`、`KB_*_MODEL`，服务器配置要求低（2C2G 够）；
+   - 自建 GPU 服务器跑 Ollama → 数据与模型完全自控，成本最高。
+3. **反代下的真实客户端 IP**：`KB_TRUST_PROXY=1`（默认）会读 `X-Forwarded-For` / `CF-Connecting-IP`；Nginx 记得加 `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`，否则限流会把所有请求算到一个 IP 上。
+4. **数据持久化**：`docker-compose.yml` 里向量库在具名卷 `kb-data`，知识内容用 `./kb:/kb-in:ro` 挂载。注意卷里只有向量/元数据，**知识 Markdown 仍以仓库为唯一事实来源**。
+5. **宝塔面板**：
+   - 首选它的 **Docker 模块**——把仓库拉到服务器，用「Compose 模板」指向本项目的 `docker-compose.yml`，在面板里配环境变量（尤其 `KB_ACCESS_TOKEN`）即可；
+   - 或者用 **Python 项目管理器**跑 `web/server.py`，再用 **网站 → 反向代理** 指向 `127.0.0.1:18765`，SSL 用面板一键 Let's Encrypt；
+   - 无论哪种方式，**上线前务必确认无口令访问 `/api/status` 返回 401**（这是本项目唯一的硬性安全检查）。
+
+### 踩坑记录（本次新增）
+
+4. **并发会让 9B 模型 ROCm OOM 并静默降级**。本机是 AMD RX 7800 XT(16GB)：两个请求同时生成时会报
+   `ROCm error: out of memory`，localbrain 随即降级为"纯语义检索"，用户拿到的是片段列表而非 AI 回答，
+   而接口看起来一切正常。已加**生成并发闸门**（`KB_MAX_CONCURRENT` 默认 2，超出排队，超时 503），
+   并在响应里新增 `degraded` 标志，前端会明确提示"大模型本次未返回结果（显存不足或服务忙）"，
+   而不是谎称"未配置模型"。要更彻底：给 Ollama 设 `OLLAMA_NUM_PARALLEL=1`、`OLLAMA_MAX_LOADED_MODELS=2` 后重启 Ollama。
+5. **quick tunnel 地址每次重启都会变**（`*.trycloudflare.com` 是随机的）。手机端长期使用建议升级为**命名隧道**：
+   `cloudflared tunnel login` → `cloudflared tunnel create kb` → 在 Cloudflare 给域名加 CNAME 指向
+   `<tunnel-id>.cfargotunnel.com` → 之后用 `web\tunnel.ps1 -Action start -TunnelName kb` 拿到**固定域名**。
+   本方案的鉴权与前端都无需改动。
+6. **`.ps1` 里不要写中文输出字符串**。Windows PowerShell 5.1 在脚本无 BOM 时按 GBK 读取，中文字符串会变乱码
+   并触发语法错误。`run.ps1` / `tunnel.ps1` 因此保持「注释可中文、**代码字符串全 ASCII**」。
+7. **不要用管道调用 `run.ps1` / `tunnel.ps1`**。它们 `Start-Process` 起的常驻进程会继承标准输出句柄，
+   管道永不关闭，调用方会一直等下去（表现为"命令卡住直到超时"）。自动化请用
+   `Start-Process ... -RedirectStandardOutput <文件>`。
+8. **`OLLAMA_HOST=0.0.0.0`**：本机 Ollama 监听所有网卡（且 `OLLAMA_ORIGINS=*`），同一局域网内可直接调用模型。
+   隧道只转发 18765，**不会**把 Ollama 暴露到公网；但若不需要局域网访问，建议改回 `127.0.0.1` 再重启 Ollama。
+9. **Tailscale Funnel 首次必须由账号主人手动授权一次**：直接跑 `tailscale funnel` 只会打印
+   `Funnel is not enabled on your tailnet. To enable, visit: https://login.tailscale.com/f/funnel?node=...`
+   然后**挂住等待**（`--yes` 参数替代不了这个授权）。在浏览器点开该链接确认后，再跑一次即可。
+10. **计划任务「无限重复」的写法**：`New-ScheduledTaskTrigger -RepetitionDuration ([TimeSpan]::MaxValue)`
+    会序列化成 `P99999999DT23H59M59S`，被任务计划拒绝（`The task XML contains a value which is incorrectly
+    formatted or out of range`）。正确做法是**只给 `-RepetitionInterval`、不给 `-RepetitionDuration`**——
+    Duration 为空即表示无限重复。
+11. **快速隧道扛不住重启**：`*.trycloudflare.com` 是随机地址，电脑一重启隧道进程就没了、地址也永久失效
+    （这就是「网址打不开了」的直接原因）。**Tailscale Funnel 给的是固定域名**，重启后由计划任务自动重拉，
+    这才是「常态化」的关键差别。
+12. **`Get-Content` 在 PowerShell 5.1 下默认按 GBK 读文件**：读 UTF-8 中文文件（如生成的日志）会乱码。
+    排查时用 `Get-Content -Encoding UTF8`，或用支持 UTF-8 的编辑器打开。

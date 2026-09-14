@@ -2,15 +2,23 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>知识库问答</title>
+<meta name="theme-color" content="#0f1420">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="知识库">
+<link rel="manifest" href="/static/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+<link rel="icon" href="/static/icon-192.png" type="image/png">
 <style>
   :root {
     --bg:#0f1420; --panel:#171e2e; --panel2:#1e2740; --line:#2a3552;
     --text:#e8edf7; --muted:#8fa0bf; --accent:#4f8cff; --ok:#34c77b; --bad:#e05d5d;
   }
   * { box-sizing:border-box; }
-  body { margin:0; font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif; background:var(--bg); color:var(--text); height:100vh; display:flex; flex-direction:column; }
+  body { margin:0; font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif; background:var(--bg); color:var(--text); height:100vh; height:100dvh; display:flex; flex-direction:column; }
   header { display:flex; align-items:center; gap:12px; padding:10px 18px; border-bottom:1px solid var(--line); background:var(--panel); flex-wrap:wrap; }
   header h1 { font-size:16px; margin:0; font-weight:600; }
   .sub { color:var(--muted); font-size:12px; }
@@ -59,6 +67,33 @@
   .hint { color:var(--muted); font-size:12px; margin-top:6px; text-align:center; }
   .spin { display:inline-block; width:14px; height:14px; border:2px solid rgba(255,255,255,.4); border-top-color:#fff; border-radius:50%; animation:r .7s linear infinite; vertical-align:-2px; }
   @keyframes r { to { transform:rotate(360deg); } }
+
+  /* ===== 移动端适配 ===== */
+  header { padding-top:calc(10px + env(safe-area-inset-top)); }
+  footer { padding-bottom:calc(12px + env(safe-area-inset-bottom)); }
+  @media (max-width:560px){
+    header { gap:8px; padding-left:14px; padding-right:14px; }
+    header h1 { font-size:15px; }
+    header .sub { display:none; }
+    #main { padding:14px 12px; }
+    .msg { max-width:92%; font-size:15px; }
+    .sources { width:92%; max-width:92%; }
+    footer { padding-left:12px; padding-right:12px; }
+    .box { gap:8px; }
+    textarea { font-size:16px; }           /* 低于 16px 时 iOS 聚焦会自动放大整页 */
+    button { padding:0 16px; }
+  }
+
+  /* ===== 访问口令闸门 ===== */
+  #gate { position:fixed; inset:0; z-index:50; display:flex; align-items:center; justify-content:center; padding:24px; background:rgba(9,13,22,.93); }
+  #gate[hidden] { display:none; }
+  .gate-card { background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:26px 22px; width:100%; max-width:340px; text-align:center; }
+  .gate-card h2 { margin:0 0 6px; font-size:17px; }
+  .gate-card p { margin:0 0 16px; color:var(--muted); font-size:13px; line-height:1.6; }
+  .gate-card input { width:100%; background:var(--panel2); color:var(--text); border:1px solid var(--line); border-radius:10px; padding:12px 14px; font-size:16px; outline:none; font-family:inherit; }
+  .gate-card input:focus { border-color:var(--accent); }
+  .gate-card button { width:100%; height:46px; margin-top:12px; }
+  .gate-err { color:var(--bad); font-size:12.5px; min-height:18px; margin-top:8px; }
 </style>
 </head>
 <body>
@@ -79,13 +114,62 @@
   </div>
   <div class="hint" id="hint"></div>
 </footer>
+<div id="gate" hidden>
+  <div class="gate-card">
+    <h2>🔒 需要访问口令</h2>
+    <p>这是私人知识库，请输入访问口令后进入。</p>
+    <input id="gateInput" type="password" placeholder="访问口令" autocomplete="current-password" enterkeyhint="go">
+    <button id="gateBtn">进入</button>
+    <div class="gate-err" id="gateErr"></div>
+  </div>
+</div>
 <script>
 const $main=document.getElementById('main'), $q=document.getElementById('q'), $send=document.getElementById('send');
 const $mode=document.getElementById('mode'), $items=document.getElementById('items'), $kbSel=document.getElementById('kbSel');
-const STORAGE='kbActive';
+const $gate=document.getElementById('gate'), $gateInput=document.getElementById('gateInput');
+const $gateBtn=document.getElementById('gateBtn'), $gateErr=document.getElementById('gateErr');
+const STORAGE='kbActive', TOKEN_KEY='kbToken';
 let kb = localStorage.getItem(STORAGE) || 'ai-software-testing';
+let token = localStorage.getItem(TOKEN_KEY) || '';
 
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+
+/* ---------- 访问口令：统一走 X-KB-Token 头（安卓端可复用同一口径） ---------- */
+class AuthError extends Error {}
+function authHeaders(extra){
+  const h = Object.assign({}, extra||{});
+  if(token) h['X-KB-Token'] = token;
+  return h;
+}
+async function apiFetch(path, opts){
+  opts = opts || {};
+  opts.headers = authHeaders(opts.headers);
+  const r = await fetch(path, opts);
+  if(r.status===401){ showGate('口令不正确或已失效，请重新输入'); throw new AuthError('unauthorized'); }
+  if(r.status===429) throw new Error('请求过于频繁，请稍后再试');
+  return r;
+}
+function showGate(msg){ $gate.hidden=false; $gateErr.textContent=msg||''; setTimeout(()=>$gateInput.focus(),60); }
+function hideGate(){ $gate.hidden=true; $gateErr.textContent=''; }
+
+async function submitGate(){
+  const v=$gateInput.value.trim();
+  if(!v){ $gateErr.textContent='请输入口令'; return; }
+  $gateErr.textContent='验证中…';
+  try{
+    const r=await fetch('/api/status',{headers:{'X-KB-Token':v}});
+    if(r.status===401){ $gateErr.textContent='口令不正确'; return; }
+    if(r.status===429){ $gateErr.textContent='尝试过多，请稍后再试'; return; }
+    if(!r.ok){ $gateErr.textContent='服务异常（'+r.status+'）'; return; }
+    token=v; localStorage.setItem(TOKEN_KEY, token);
+    hideGate(); $gateInput.value='';
+    applyStatus(await r.json());
+    addMsg('system','已连接。直接提问即可；可在上方切换知识库。');
+    $q.focus();
+  }catch(e){ $gateErr.textContent='连接失败：'+e.message; }
+}
+$gateBtn.onclick=submitGate;
+$gateInput.addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); submitGate(); }});
 
 /* ---------- 轻量 Markdown -> HTML（离线、无第三方依赖） ---------- */
 function inlineMd(raw){
@@ -139,26 +223,34 @@ function mdToHtml(text){
 
 function addMsg(role, html){ const d=document.createElement('div'); d.className='msg '+role; d.innerHTML=html; $main.appendChild(d); $main.scrollTop=$main.scrollHeight; return d; }
 
+function applyStatus(s){
+  const opts=s.kbs.map(k=>'<option value="'+k.id+'"'+(k.id===kb?' selected':'')+'>'+esc(k.label)+'</option>').join('');
+  if($kbSel.innerHTML!==opts){ $kbSel.innerHTML=opts; }
+  const cur=s.kbs.find(k=>k.id===kb)||s.kbs[0];
+  if(cur){
+    let txt='未知',cls='';
+    if(cur.modes.rag){ txt='RAG 生成式问答'; cls='on'; }
+    else if(cur.modes.semantic){ txt='语义检索（无LLM）'; cls=''; }
+    else { txt='关键词检索'; cls=''; }
+    $mode.textContent=txt; $mode.className='badge '+cls;
+    $items.textContent='条目：'+(cur.items>=0?cur.items:'?');
+  }
+}
 async function refreshStatus(){
   try{
-    const s=await (await fetch('/api/status')).json();
-    const opts=s.kbs.map(k=>'<option value="'+k.id+'"'+(k.id===kb?' selected':'')+'>'+esc(k.label)+'</option>').join('');
-    if($kbSel.innerHTML!==opts){ $kbSel.innerHTML=opts; }
-    const cur=s.kbs.find(k=>k.id===kb)||s.kbs[0];
-    if(cur){
-      let txt='未知',cls='';
-      if(cur.modes.rag){ txt='RAG 生成式问答'; cls='on'; }
-      else if(cur.modes.semantic){ txt='语义检索（无LLM）'; cls=''; }
-      else { txt='关键词检索'; cls=''; }
-      $mode.textContent=txt; $mode.className='badge '+cls;
-      $items.textContent='条目：'+(cur.items>=0?cur.items:'?');
-    }
-  }catch(e){ $mode.textContent='服务未连接'; }
+    applyStatus(await (await apiFetch('/api/status')).json());
+  }catch(e){
+    if(e instanceof AuthError) return;         // 闸门已弹出，状态栏不用再报错
+    $mode.textContent=(e&&e.message)?e.message:'服务未连接';
+    $mode.className='badge';
+  }
 }
 
 function modePrefix(j){
-  if(j.mode==='semantic') return '（当前无大模型配置：以下为语义检索到的相关片段，非 AI 总结）\n\n';
-  if(j.mode==='keyword') return '（未配置嵌入服务：以下为关键词检索片段）\n\n';
+  // degraded = 已经配好了模型却降级，多半是显存不足/服务忙，而不是"没配"
+  const why = j.degraded ? '大模型本次未返回结果（多为显存不足或服务忙），已退回检索结果，稍后重试即可' : null;
+  if(j.mode==='semantic') return '（'+(why||'当前无大模型配置')+'：以下为语义检索到的相关片段，非 AI 总结）\n\n';
+  if(j.mode==='keyword') return '（'+(why||'未配置嵌入服务')+'：以下为关键词检索片段）\n\n';
   if(j.mode==='none') return '（知识库中未找到相关内容）\n\n';
   return '';
 }
@@ -169,12 +261,15 @@ async function ask(){
   addMsg('user', esc(q));
   const wait=addMsg('bot','思考中…');
   try{
-    const r=await fetch('/api/ask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q, kb:kb, top_k:6})});
+    const r=await apiFetch('/api/ask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q, kb:kb, top_k:6})});
     const j=await r.json();
-    if(!r.ok){ wait.innerHTML='<p>错误：'+esc(j.detail||r.status)+'</p>'; return; }
+    if(!r.ok){ wait.innerHTML='<p>错误：'+esc(typeof j.detail==='string'?j.detail:r.status)+'</p>'; return; }
     wait.innerHTML = mdToHtml(modePrefix(j) + (j.answer||''));
     wait.insertAdjacentHTML('afterend', renderSources(j.sources));
-  }catch(e){ wait.innerHTML='<p>请求失败：'+esc(e)+'</p>'; }
+  }catch(e){
+    if(e instanceof AuthError){ wait.innerHTML='<p>需要访问口令，请在弹窗中重新输入。</p>'; }
+    else { wait.innerHTML='<p>请求失败：'+esc(e.message||e)+'</p>'; }
+  }
   finally{ $send.disabled=false; $send.textContent='发送'; $q.focus(); }
 }
 
@@ -192,7 +287,8 @@ $send.onclick=ask;
 $q.addEventListener('keydown',e=>{ if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); ask(); }});
 $kbSel.addEventListener('change',()=>{ kb=$kbSel.value; localStorage.setItem(STORAGE,kb);
   addMsg('system','已切换到知识库：<b>'+esc($kbSel.options[$kbSel.selectedIndex].text)+'</b>'); refreshStatus(); });
-refreshStatus(); setInterval(refreshStatus,15000); $q.focus();
+refreshStatus(); setInterval(refreshStatus,15000);
+(async ()=>{ await refreshStatus(); if($gate.hidden) $q.focus(); })();
 </script>
 </body>
 </html>

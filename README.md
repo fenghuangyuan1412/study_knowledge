@@ -32,6 +32,15 @@
    - 本机：`powershell -ExecutionPolicy Bypass -File web\run.ps1 -Action start`（start / status / logs / stop，可 `-Port` 换端口）；
    - Docker：`docker compose up --build -d`（默认 http://127.0.0.1:18765，`KB_PORT=9000` 可换端口；镜像只打包应用与引擎，个人内容与模型数据用卷挂载，互不混入）。
 5. **新增知识库**：建目录 + 写 README 简介；语料按需走「全文索引」或「向量入库」任意一种接入。
+6. **公网访问（方案 A：隧道穿透 + 常态化部署，供朋友内测）**：模型与数据都留在本机，只把本机服务映射到公网，不迁移数据、不部署云模型。
+   - **永久地址**：`https://pc-202412121713.tail69ff66.ts.net/`（Tailscale Funnel 提供固定 HTTPS 域名，**不随重启变化**）；
+   - **开机即在线**：`powershell -ExecutionPolicy Bypass -File web\deploy.ps1 -Action ensure` 是幂等的一键恢复（起服务 → 开隧道 → 校验守卫 → 记录地址）。已注册 Windows 计划任务 `StudyKnowledge-KB-AutoDeploy`，**登录时 + 每 5 分钟**自动执行，重启后自动恢复、隧道掉线自动重拉；
+   - **访问口令（强制）**：先设 `KB_ACCESS_TOKEN`（环境变量，**不入库**）。**没设口令时 `deploy.ps1`/`tunnel.ps1` 会拒绝暴露**，并在开隧道前端到端确认「无口令请求返回 401」；
+   - 把「地址 + 口令」发给朋友即可；手机端浏览器打开后「添加到主屏幕」即成为全屏 App（PWA）；
+   - 排查状态：`web\deploy.ps1 -Action status`；停隧道：`-Action stop`；
+   - 后续写**安卓端**直接复用 `/api/status` 与 `/api/ask`，鉴权统一走 `X-KB-Token` 头，**不需要另建后端**；
+   - **上云**：`Dockerfile` + `docker-compose.yml` 已含全部环境变量，可直接用于云服务器或宝塔面板；
+   - 环境变量表、手机端说明与踩坑记录见 `web/README.md`，方向约定见 `agent.md` 第六节。
 
 ## 使用示例
 
@@ -41,4 +50,5 @@
 ## 内容约定
 
 - **方向性 / 结构性改动**（前后端、切换知识库方向——如软件测试、模型微调等）在 `agent.md` 约定后执行；具体内容增改直接改对应知识库的 Markdown。
+- **公网只暴露 Web 问答层**：毛选 1–7 卷全文只在本机 skill 目录，**不在公网链路上**（Web 层的毛选库只有 5 篇精读笔记）；日后新增含版权大语料的库，默认不纳入公网问答。
 - 版权文本、大语料与向量/索引数据留在本机，不入版本库。
