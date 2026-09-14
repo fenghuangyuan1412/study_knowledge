@@ -12,11 +12,16 @@ batch-001 只精读了 5 篇代表作，向量库里可检索的内容太薄—�
 
 ## 生成方式（可复现）
 
-- 脚本：`web/.runtime/_mao_sum/summarize.py`（本地模型 map-reduce + 断点续跑）
+- 脚本：`web/mao_summarize.py`（本地模型 map-reduce + 断点续跑，已入库）
 - 模型：本地 Ollama `qwen3.5:9b`（`num_ctx=8192`，`think=false`）
 - 流程：长文按 2400 字切块 → 每块提炼要点 → 汇总要点合成结构化总结
 - 原文来源：《毛泽东选集》1–7 卷全文语料（本地 skill `mao-selected-works`，**不入 git**）
-- 复现：`python web\.runtime\_mao_sum\summarize.py --volume 1`
+- 复现：`python web\mao_summarize.py --volume 1`
+- 后续卷：`--volume 2` 依次产出 `batch-003`、`batch-004`…；已完成篇目会自动跳过（断点续跑）
+
+> 入库：`python web\kb_ingest.py --kb maoxuan --glob "kb/maoxuan/batch-002/items/*.md"`
+> ⚠️ **不要**直接用 `localbrain collect file add` 入库——它的输出目录不读 config、且秒级 id
+> 会让同一秒采集的文件互相覆盖（详见 `web/README.md` 踩坑 13-16）。
 
 > **重要**：本批是**内容总结**（依据原文分段归纳），**不是原文全文**。需要引用原文时请回原书或本地全文语料核对。
 
