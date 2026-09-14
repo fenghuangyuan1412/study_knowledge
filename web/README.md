@@ -190,3 +190,18 @@ docker compose up --build -d             # 默认 http://<服务器IP>:18765
     这才是「常态化」的关键差别。
 12. **`Get-Content` 在 PowerShell 5.1 下默认按 GBK 读文件**：读 UTF-8 中文文件（如生成的日志）会乱码。
     排查时用 `Get-Content -Encoding UTF8`，或用支持 UTF-8 的编辑器打开。
+13. **`FileCollector()` 不读配置里的 data_dir**（localbrain 的坑，最隐蔽的一个）。
+    `kb/commands/collect.py` 是 `collector = FileCollector()` **无参构造**，而它的 `output_dir`
+    默认硬编码为 `~/.knowledge-base/1_collect`。但 sqlite 与 Chroma 走的是 `Config(CONFIG_FILE)`，
+    **会正确指向目标库** —— 结果是「DB/向量进了毛选库，文件却落进了测试库」，
+    表现出来就是前端条目数对不上。解法：用 `web/kb_ingest.py`（**显式传 `output_dir`**），
+    或在 `kb/commands/utils.py` 里给 `CONFIG_FILE` 打补丁后自己构造 collector。
+14. **localbrain 的采集 id 是秒级的**：`file_YYYYmmdd_HHMMSS`。同一秒内采集多个文件会**撞 id**，
+    而 chunk id 是 `{item_id}_chunk_{i}` —— 于是后写的 chunk **直接覆盖**先写的。
+    实测 18 篇在 5 秒内采完，只有 8 篇真正进了向量库，**而且全程没有任何报错**。
+    解法：`web/kb_ingest.py` 会在撞 id 时删掉刚写的文件、等 1.1 秒重采，保证 id 唯一。
+15. **`_index_content_for_search` 会静默失败**：它内部 `try/except` 后 `return False`
+    （chunker 失败时甚至**直接 return 不打印任何日志**）。所以入库脚本**必须检查它的返回值**，
+    否则会出现「脚本 18/18 全部 OK，但向量库里只有一半」这种假成功。
+16. **索引失败常见诱因是 GPU 争抢**：同时跑批量总结（占满显存）时做入库，embedding 会失败。
+    批量生成内容与批量入库**不要并发**。
