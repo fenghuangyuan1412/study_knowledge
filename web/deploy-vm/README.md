@@ -93,6 +93,59 @@ powershell -File web\deploy.ps1  -Action ensure -Target vm   # 一键恢复整�
 
 NPM 首次登录：`http://192.168.163.128:81` → `admin@example.com` / `changeme`（**登录后立刻改**）。
 
+### NPM 使用要点（Hosts / Access Lists / Certificates）
+
+| 菜单 | 干什么 |
+| --- | --- |
+| **Hosts → Proxy Hosts** | 一个 Proxy Host = 一条「域名 → 后端」的转发规则 |
+| **Hosts → Redirection Hosts** | 把一个域名 301/302 跳到另一个域名（比如 http→https 或旧域名→新域名） |
+| **Hosts → Streams** | 转发 **TCP/UDP**（非 HTTP），例如数据库、SSH、其他自定义端口 |
+| **Access Lists** | 给某个站点加 Basic Auth（用户名/密码），或限制来源 IP |
+| **Certificates** | 申请/续期 Let's Encrypt 证书。**必须先有能解析到本机、且能从公网访问 80 端口的真实域名**才能签下来 |
+| **Users** | 面板账号（给别的人开只读/受限权限） |
+| **Audit Logs** | 谁在什么时候改了什么 |
+| **Settings** | 默认站点、面板端口等 |
+
+**加一个站点（Proxy Host）的填法**
+
+| 字段 | 说明 |
+| --- | --- |
+| Domain Names | 用哪个域名访问。**必须与浏览器地址栏里的主机名完全一致**（可填多个，一行一个） |
+| Scheme | 后端是 http 还是 https（容器间一般填 `http`） |
+| Forward Hostname / IP | 后端地址：**同网络用容器名**（如 `kb-web`），否则用 IP |
+| Forward Port | 后端端口（知识库是 `18765`） |
+| Block Common Exploits | 建议勾 |
+| Websockets Support | 后端用到 WebSocket 才勾 |
+
+### 为什么"自己起的域名"访问不了（实测结论）
+
+用 `zhoushun666` 建 Proxy Host 后打不开，**不是 NPM 配错了**。用 `curl -H "Host: zhoushun666" http://192.168.163.128/`
+能返回知识库页面（200），说明转发规则是好的。打不开是下面四条：
+
+1. **`zhoushun666` 不是可解析的域名**。它是**单标签主机名**，没有 DNS 记录，`nslookup` 直接报
+   `No such host is known`。浏览器输入它会被当成搜索词，或在局域网里靠 NetBIOS/mDNS 乱猜。
+   → 要用就必须自己给"客户端"一条解析记录（hosts 文件或内网 DNS）。
+2. **解析到哪个 IP 都各有问题**：
+   - 指向 **VM `192.168.163.128`** → 只有**同一局域网**能用，且手机/电视改 hosts 很麻烦；
+   - 指向 **Windows 宿主机** → 打不开：宿主机 **80 端口没有任何服务**，也没转发给 VM；
+     **443 已被 `tailscaled` 占用**（Tailscale Funnel 在用），不可能再给 NPM。
+3. **没有公网入口**。Tailscale Funnel 只转发宿主机的 **18765**，不转发 80/443；
+   宿主机也没为 80/443 建 portproxy。所以这个域名从公网根本进不来。
+4. **NPM 是按 `Host` 头路由的**。直接用 IP 访问（`http://192.168.163.128/`）时 Host 头是 IP，
+   不匹配任何 Proxy Host → 落到 **Default Site**（"能打开但不是你的站"，最容易误判成"配错了"）。
+
+**那怎么写才对？**
+
+| 目标 | 做法 |
+| --- | --- |
+| 只在这台 Windows 上用域名 | 改 `C:\Windows\System32\drivers\etc\hosts` 加 `192.168.163.128 kb.local`，Proxy Host 的 Domain 填 `kb.local` |
+| 局域网内所有设备 | 用真实域名 + **内网 DNS**（路由器/AdGuard 加一条 A 记录指向 `192.168.163.128`）；光靠 hosts 覆盖不了手机 |
+| 公网 + 自定义域名（成本高） | 需要：真实域名 → DNS A 记录指向**你家公网 IP** → 路由器把 **80/443 端口映射**到 Windows 宿主 → 宿主加 `portproxy 80/443 → 192.168.163.128`（**443 会与 Tailscale 冲突，得给它换端口**）→ 国内还要 **ICP 备案** |
+| **推荐** | **公网就用 Tailscale 那个永久地址**（已经在跑，朋友也在用）；NPM 留给**局域网和以后的内部站点**，不当公网入口 |
+
+> 一句话：NPM 是"**内网服务的统一门牌**"，它不做域名解析、也不负责把公网流量引进来。
+> 公网入口这一步本项目已经由 Tailscale Funnel 承担了。
+
 ## 开机自启链
 
 | 任务 | 触发 | 作用 |

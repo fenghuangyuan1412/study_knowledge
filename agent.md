@@ -94,7 +94,40 @@
 
 ---
 
-## 八、变更记录
+## 八、关键约束与踩坑速查（v1.0 定型）
+
+以下是**结构性约束**，违反任意一条都会导致线上出问题。完整复现与排查过程见 `web/README.md` 踩坑记录（共 22 条）。
+
+### 硬约束（必须遵守）
+
+1. **口令**：服务一经暴露，`KB_ACCESS_TOKEN` 必填，且**绝不写入任何入库文件**；暴露前必须确认「无口令请求 `/api/status` 返回 401」。
+2. **并发闸门**：`KB_MAX_CONCURRENT` 必须保留（默认 2）。本机 AMD 16GB 显存，并发会触发 `ROCm error: out of memory`，localbrain 随即**静默降级**为纯语义检索——接口看着正常，用户拿到的却是片段列表而非 AI 回答。
+3. **入库必须用 `web/kb_ingest.py`**，不要用裸 `localbrain collect`（理由见下表前三条）。
+4. **批量生成内容与批量入库不要并发**（争抢显存会让 embedding 失败）。
+5. **两个知识库是两个独立数据实例**：任何容器化 / 迁移 / 备份都要同时处理 `config.yaml` 与 `config-maoxuan.yaml`，缺一个就有一个库哑掉。
+6. **`.ps1` 里代码字符串只用 ASCII**：Windows PowerShell 5.1 在无 BOM 时按 GBK 读脚本，中文字符串会变乱码并破坏语法（注释可中文，代码字符串不行）。
+7. **不要用管道调用 `run.ps1` / `deploy.ps1` / `tunnel.ps1` / `vm.ps1`**：它们 `Start-Process` 起的常驻进程会继承标准输出句柄，管道永不关闭，调用方会一直等下去。自动化请用 `Start-Process ... -RedirectStandardOutput <文件>`。
+8. **PowerShell 变量名大小写不敏感**：`$target` 与 `$Target` 是同一个变量，改名时要全局搜。
+
+### localbrain 的坑（这四条都造成过"静默错误"——脚本报成功、实际没生效）
+
+| 现象 | 原因 | 处理 |
+| --- | --- | --- |
+| 入库显示 18/18 全部 OK，向量库里只有一半 | 采集 id 是**秒级**的（`file_YYYYmmdd_HHMMSS`），同一秒采集的多个文件 id 相同 → chunk id 互相覆盖 | `kb_ingest.py` 检测到撞 id 时删掉重采（等 1.1 秒） |
+| 脚本报成功但检索不到 | `_index_content_for_search` 内部 `except` 后 `return False`，chunker 失败时甚至**不打日志直接 return** | **必须检查它的返回值**才算真成功 |
+| DB 在 A 库、文件却落在 B 库 | `FileCollector()` 无参构造时输出目录**硬编码** `~/.knowledge-base/1_collect`，不读 config（而 sqlite/Chroma 会读） | 显式传 `output_dir` |
+| **问毛选却返回软件测试的内容** | 容器配置只写了 embedding/llm/data_dir，缺 `storage.persist_directory` → 检索落到默认库的向量目录 | 以**宿主机完整配置为模板**，只覆盖 `data_dir`/`storage.persist_directory`/`embedding`/`llm` |
+
+### 环境依赖（易踩）
+
+- `python:3.12-slim` **不含 git**，而 `pip install "localbrain @ git+https://…"` 需要它 —— 缺了直接构建失败；
+- VM 只能直连 `download.docker.com` 与国内镜像；**`pypi.org`、`registry-1.docker.io`、`github.com` 均不通** → 必须配 `PIP_INDEX` / `GITHUB_PROXY` / docker `registry-mirrors`；
+- `netsh interface portproxy` 需要管理员权限（对应计划任务用 `-RunLevel Highest` 注册，不弹 UAC）；
+- `github.com` 域名当前被阻断（解析到的 IP 不通，其他 GitHub IP 正常），宿主 hosts 里已指向可达 IP `140.82.113.3`；换网络后若拉取失败先检查这一行。
+
+---
+
+## 九、变更记录
 
 - **第一次提交（信息：agent修改）**：创建本文件，确立「agent.md 管方向 + 主题 md 管内容」的知识库工作方式。
 - **第二次提交（信息：结构-接入 localbrain 向量库与 Web 问答页，确立 git 分支合流工作流）**：接入 localbrain 向量引擎；确立 `kb/<方向>/batch-*/items` 内容目录与「分支添加 → 同意后合入 main → 推送 origin」工作流；新增 `web/` 本地问答页；沉淀第一批 AI 软件测试知识。
@@ -111,3 +144,8 @@
   3. **容器多知识库支持**：`bootstrap_config.py` 现在生成两个库的配置，并**以宿主机完整配置为模板**（挂载 `/config-templates`）——只覆盖 `data_dir`/`storage.persist_directory`/`embedding`/`llm`，避免缺 `storage` 段导致跨库串味。
   4. Dockerfile 补 `git`（原版缺，构建必失败）并加 `DEBIAN_MIRROR`/`PIP_INDEX`/`GITHUB_PROXY` 构建参数适配国内网络。
   5. **扩展位（后门）**：VM 内 `nginx-proxy-manager` 占 80/443/81，后续别的网站与 new-api 穿透直接往这里放。踩坑记录补至 22 条。
+- **v1.0 归档（信息：归档 v1.0——知识库运行 + 本地模型 + 虚拟机部署三项完成）**：
+  1. 新增第八节「关键约束与踩坑速查」，把 8 条硬约束与 localbrain 的四个"静默错误"固化为项目级约定；
+  2. 新增 `CHANGELOG.md`，确立「按版本归档、`main` 上打 git tag」的做法，本版打 tag `v1.0`；
+  3. `web/deploy-vm/README.md` 补齐 **Nginx Proxy Manager 完整用法**，并记录了「自建域名访问不了」的实测结论与四种场景的正确做法；
+  4. **记录后续方向**：① 界面优化（交互/引用展示/多轮上下文）；② 知识内容可由朋友添加（Web 上传入口、PDF 解析入向量库、投稿待审、异步任务队列）；③ 安卓端、毛选后续卷、NPM 作为公网入口。
