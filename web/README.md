@@ -1,6 +1,10 @@
 # 本地知识库 Web 问答页（web/）
 
-在浏览器里直接向「AI软件测试」知识库提问的后端与页面（main 分支维护）。
+在浏览器里直接向知识库提问的后端与页面（main 分支维护）。
+**本文覆盖：运行前提、启停、后端能力与切换、知识入库、环境变量、公网访问、云/虚拟机部署、踩坑记录。**
+
+> 项目整体介绍见仓库根目录 [`README.md`](../README.md)；虚拟机部署细节见 [`deploy-vm/README.md`](deploy-vm/README.md)；
+> 方向约定见 [`agent.md`](../agent.md)。
 
 > ⚠️ **给自己的提醒（重要）**：先用阿里云 DashScope 免费额度把整库与问答跑通；免费额度用完 / 想完全本地化后，
 > **切换成本地模型**——把 `~/.localbrain/config.yaml` 的 `embedding`/`llm` 两段改成走本地 **new-api（OpenAI 兼容）接 Ollama**
@@ -9,8 +13,37 @@
 
 ## 运行前提
 
-1. localbrain 已安装并初始化（数据在 `~/.knowledge-base`，配置 `~/.localbrain/config.yaml`）
-2. 知识内容已收集（`kb/<方向>/batch-*/items/*.md` → `localbrain collect file add`，可选 `localbrain mine` 向量化）
+1. **Python 3.10+**（容器方案无需本机 Python）；
+2. localbrain 已安装并初始化（数据在 `~/.knowledge-base`，配置 `~/.localbrain/config.yaml`）；
+3. 模型服务可达：默认走本机 Ollama（`127.0.0.1:11434`，需有 `bge-m3` 与对话模型），或任一 OpenAI 兼容网关；
+4. 知识内容已入库（见下节）。
+
+## 知识入库（新增 / 更新内容）
+
+**入口**：把整理好的 Markdown 放进 `kb/<方向>/batch-<编号>/items/`，然后执行：
+
+```powershell
+# 按知识库入库（会自动采集 + 写 Chroma 向量）
+python web\kb_ingest.py --kb ai-software-testing --glob "kb/ai-software-testing/batch-003/items/*.md"
+python web\kb_ingest.py --kb maoxuan           --glob "kb/maoxuan/batch-003/items/*.md"
+
+# 预览不落库
+python web\kb_ingest.py --kb maoxuan --glob "..." --dry-run
+```
+
+> ⚠️ **必须用 `web/kb_ingest.py`，不要直接用裸 `localbrain collect`**。原因（详见踩坑 13–15）：
+> CLI 的配置路径是硬编码的、文件输出目录不读配置、且采集 id 是秒级的（同秒采集会互相覆盖）。
+> `kb_ingest.py` 这三件事都处理了，并会**检查索引返回值**，避免"脚本报成功、向量库没进"。
+
+**部署在虚拟机上时**，入库后要把数据同步过去：
+
+```powershell
+python web\vm_deploy.py --stage upload   # 上传应用 + 两个库的数据
+python web\vm_deploy.py --stage up       # 重建容器使其生效
+```
+
+**全文检索库（大语料，如《毛选》1–7 卷）**独立于向量库，走 skill 建索引，用法见
+[`kb/maoxuan/README.md`](../kb/maoxuan/README.md)。
 
 ## 启动 / 停止
 
