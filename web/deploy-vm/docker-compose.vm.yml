@@ -1,0 +1,79 @@
+# 知识库问答站 —— 虚拟机（Ubuntu）上的长期部署编排
+#
+# 架构：
+#   nginx-proxy-manager (80/443/81)  ← 后门：以后加站点/证书在网页上点几下
+#        └─ kb-web (18765)           ← 知识库问答（FastAPI + localbrain）
+#               └─ 模型服务 → host.docker.internal:11434（宿主机的 Ollama）
+#                             或 host.docker.internal:8000/v1（宿主机 New API，需 token）
+#
+# 宿主机在 VM 里固定映射为 host.docker.internal（见 extra_hosts），
+# 因为 VMware NAT 下宿主机是 192.168.163.1。
+
+services:
+  kb-web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # 国内网络：VM 直连 pypi.org / registry-1.docker.io 均不通，必须走镜像与代理
+        DEBIAN_MIRROR: ${DEBIAN_MIRROR:-mirrors.tuna.tsinghua.edu.cn}
+        PIP_INDEX: ${PIP_INDEX:-https://pypi.tuna.tsinghua.edu.cn/simple}
+        GITHUB_PROXY: ${GITHUB_PROXY:-https://gh-proxy.com/}
+    image: study-knowledge-kb-web:vm
+    container_name: kb-web
+    restart: unless-stopped
+    environment:
+      PORT: "18765"
+      HOST: "0.0.0.0"
+      # ---- 模型接线 ----
+      KB_EMBED_MODEL: ${KB_EMBED_MODEL:-ollama/bge-m3}
+      KB_EMBED_BASE: ${KB_EMBED_BASE:-http://host.docker.internal:11434}
+      KB_LLM_MODEL: ${KB_LLM_MODEL:-ollama/qwen3.5:9b}
+      KB_LLM_BASE: ${KB_LLM_BASE:-http://host.docker.internal:11434}
+      KB_API_KEY: ${KB_API_KEY:-not-needed}      # 用 New API 时填其 token
+      KB_THINK: ${KB_THINK:-false}               # qwen3 类思考模型必须 false
+      # ---- 访问控制（公网暴露必填）----
+      KB_ACCESS_TOKEN: ${KB_ACCESS_TOKEN:?请在 .env 里设置 KB_ACCESS_TOKEN}
+      KB_RATE_LIMIT: ${KB_RATE_LIMIT:-60}
+      KB_AUTH_FAIL_LIMIT: ${KB_AUTH_FAIL_LIMIT:-10}
+      KB_MAX_CONCURRENT: ${KB_MAX_CONCURRENT:-2}
+      KB_QUEUE_TIMEOUT: ${KB_QUEUE_TIMEOUT:-180}
+      KB_CORS_ORIGINS: ${KB_CORS_ORIGINS:-}
+      KB_TRUST_PROXY: ${KB_TRUST_PROXY:-1}
+    volumes:
+      # 两个独立知识库实例（与 web/server.py 的 PROFILES 对应）
+      - ./data/knowledge-base:/root/.knowledge-base
+      - ./data/knowledge-base-maoxuan:/root/.knowledge-base-maoxuan
+      - ./kb:/kb-in:ro
+      # 宿主机的完整 localbrain 配置作为模板：只覆盖路径与模型接线，
+      # 其余段（storage.persist_directory / chunking / query）原样保留，
+      # 否则检索会因缺 storage 段而串到默认库
+      - ./config:/config-templates:ro
+    ports:
+      # 直接暴露给局域网/其他设备访问；也可只留 127.0.0.1 走 NPM 反代
+      - "${KB_PORT:-18765}:18765"
+    extra_hosts:
+      # VMware NAT：宿主机固定是 192.168.163.1
+      - "host.docker.internal:${HOST_GATEWAY:-192.168.163.1}"
+    networks: [kbnet]
+
+  # ---- 后门：反向代理管理面板，以后加站点/申请证书都在这儿 ----
+  nginx-proxy-manager:
+    image: jc21/nginx-proxy-manager:latest
+    container_name: npm
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      # 首次登录：admin@example.com / changeme（登录后立刻改）
+    volumes:
+      - ./npm/data:/data
+      - ./npm/letsencrypt:/etc/letsencrypt
+    ports:
+      - "80:80"       # 以后的站点走这里
+      - "443:443"     # HTTPS 证书
+      - "81:81"       # NPM 管理界面
+    networks: [kbnet]
+
+networks:
+  kbnet:
+    driver: bridge

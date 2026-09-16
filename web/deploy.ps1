@@ -26,6 +26,9 @@ param(
     [int]$Port = 18765,
     [ValidateSet('auto', 'tailscale', 'cloudflare')]
     [string]$Tunnel = 'auto',
+    [ValidateSet('host', 'vm')]
+    [string]$Target = 'host',
+    [string]$VmIp = '',
     [int]$IntervalMinutes = 5,
     [string]$TaskName = 'StudyKnowledge-KB-AutoDeploy'
 )
@@ -38,7 +41,9 @@ $rt = Join-Path $here '.runtime'
 if (-not (Test-Path $rt)) { New-Item -ItemType Directory -Path $rt | Out-Null }
 $urlFile = Join-Path $rt 'public.url'
 $logFile = Join-Path $rt 'deploy.log'
-$target = 'http://127.0.0.1:' + $Port
+# NOTE: not $target -- PowerShell variable names are case-insensitive, so
+# $target would collide with the -Target parameter above.
+$svcUrl = 'http://127.0.0.1:' + $Port
 
 function Write-Log($msg) {
     $line = ('[{0}] {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $msg)
@@ -55,7 +60,7 @@ if ($tok) { $env:KB_ACCESS_TOKEN = $tok }
 function Test-ServiceUp {
     # 200 = up and we hold a valid token; 401 = up and guarded
     foreach ($n in 1..2) {
-        $c = (& curl.exe -s -o NUL -w '%{http_code}' --max-time 6 ($target + '/api/status') 2>$null | Out-String).Trim()
+        $c = (& curl.exe -s -o NUL -w '%{http_code}' --max-time 6 ($svcUrl + '/api/status') 2>$null | Out-String).Trim()
         if ($c -eq '200' -or $c -eq '401') { return $true }
         Start-Sleep -Seconds 2
     }
@@ -63,7 +68,7 @@ function Test-ServiceUp {
 }
 
 function Test-GuardEnforced {
-    $c = (& curl.exe -s -o NUL -w '%{http_code}' --max-time 8 ($target + '/api/status') 2>$null | Out-String).Trim()
+    $c = (& curl.exe -s -o NUL -w '%{http_code}' --max-time 8 ($svcUrl + '/api/status') 2>$null | Out-String).Trim()
     if ($c -eq '401') { return $true }
     if ($c -eq '200') { return $false }
     return $null
@@ -156,6 +161,132 @@ function Resolve-Backend {
 }
 
 # --------------------------------------------------------------------------
+# --------------------------------------------------------------------------
+# VM target (Target=vm): the site runs in the Ubuntu VM, but the PUBLIC URL
+# stays exactly the same.
+#
+#   Windows boot -> VM autostart task -> containers (restart:unless-stopped)
+#   logon task   -> deploy.ps1 -Target vm ensure:
+#                     stop host copy of the service  (frees 18765)
+#                     start VM, wait for its 18765
+#                     netsh portproxy  0.0.0.0:18765 -> <vmIp>:18765
+#                     Tailscale Funnel  -> 127.0.0.1:18765  (unchanged)
+#
+# so https://<machine>.<tailnet>.ts.net keeps working and friends' links do not
+# change. Requires elevation for `netsh interface portproxy` -> the logon task
+# is registered with -RunLevel Highest.
+# --------------------------------------------------------------------------
+function Get-VmIp {
+    if ($VmIp) { return $VmIp }
+    $lease = 'C:\ProgramData\VMware\vmnetdhcp.leases'
+    if (Test-Path $lease) {
+        $txt = Get-Content $lease -Raw -ErrorAction SilentlyContinue
+        $m = [regex]::Matches($txt, 'lease\s+(\d+\.\d+\.\d+\.\d+)\s*\{')
+        if ($m.Count -gt 0) { return $m[$m.Count - 1].Groups[1].Value }
+    }
+    return '192.168.163.128'
+}
+
+function Test-TcpPort($ip, $p, $ms) {
+    $c = New-Object System.Net.Sockets.TcpClient
+    try {
+        $iar = $c.BeginConnect($ip, $p, $null, $null)
+        $ok = $iar.AsyncWaitHandle.WaitOne($ms, $false)
+        return ($ok -and $c.Connected)
+    }
+    catch { return $false }
+    finally { $c.Close() }
+}
+
+function Ensure-PortProxy($listenPort, $targetIp, $targetPort) {
+    $show = (& netsh interface portproxy show v4tov4 2>&1 | Out-String)
+    $pat = '0\.0\.0\.0\s+' + $listenPort + '\s+' + [regex]::Escape($targetIp) + '\s+' + $targetPort
+    if ($show -match $pat) { Write-Log ('  portproxy already: ' + $listenPort + ' -> ' + $targetIp + ':' + $targetPort); return $true }
+    & netsh interface portproxy delete v4tov4 listenport=$listenPort listenaddress=0.0.0.0 2>&1 | Out-Null
+    $r = (& netsh interface portproxy add v4tov4 listenport=$listenPort listenaddress=0.0.0.0 connectport=$targetPort connectaddress=$targetIp 2>&1 | Out-String)
+    if ($LASTEXITCODE -ne 0) {
+        Write-Log ('  ERROR portproxy add failed (need admin?): ' + $r.Trim())
+        return $false
+    }
+    Write-Log ('  portproxy set: ' + $listenPort + ' -> ' + $targetIp + ':' + $targetPort)
+    return $true
+}
+
+function Ensure-VmServe {
+    $ip = Get-VmIp
+    Write-Log ('target=vm  vmIp=' + $ip)
+
+    # 1) free the port on the host: the host copy of the service must not run
+    $hostPidFile = Join-Path $rt 'server.pid'
+    if (Test-Path $hostPidFile) {
+        $hp = [int](Get-Content $hostPidFile -Raw)
+        if (Get-Process -Id $hp -ErrorAction SilentlyContinue) {
+            Write-Log '  stopping host copy of the service (frees port)'
+            Start-Process powershell -ArgumentList '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $here 'run.ps1'), '-Action', 'stop' -WindowStyle Hidden -PassThru | Out-Null
+            Start-Sleep -Seconds 4
+        }
+    }
+    # a portproxy listening on 0.0.0.0:18765 excludes a local 127.0.0.1 bind;
+    # make sure no stale host listener is left
+    $holder = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue |
+              Where-Object { $_.LocalAddress -ne '0.0.0.0' }
+    foreach ($h in $holder) {
+        $pr = Get-Process -Id $h.OwningProcess -ErrorAction SilentlyContinue
+        if ($pr -and $pr.ProcessName -match 'python') {
+            Write-Log ('  killing stale host listener PID ' + $pr.Id)
+            Stop-Process -Id $pr.Id -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    # 2) VM up (autostart task normally already did this)
+    $vmPs = Join-Path $here 'vm.ps1'
+    if (Test-Path $vmPs) {
+        Start-Process powershell -ArgumentList '-ExecutionPolicy', 'Bypass', '-File', $vmPs, '-Action', 'start' -WindowStyle Hidden -PassThru | Out-Null
+    }
+
+    # 3) wait for the service inside the VM
+    $up = $false
+    foreach ($i in 1..40) {
+        if (Test-TcpPort $ip $Port 3000) { $up = $true; Write-Log ('  VM service reachable after ' + ($i * 3) + 's'); break }
+        Start-Sleep -Seconds 3
+    }
+    if (-not $up) {
+        Write-Log ('  ERROR: VM service not reachable at ' + $ip + ':' + $Port)
+        Write-Log '  check inside the VM:  cd /opt/study-knowledge && docker compose ps'
+        return $false
+    }
+
+    # 4) forward + funnel
+    if (-not (Ensure-PortProxy $Port $ip $Port)) { return $false }
+
+    $be = Resolve-Backend
+    Write-Log ('  tunnel backend: ' + $be)
+    $url = $null
+    if ($be -eq 'tailscale') { $url = Start-TunnelTailscale }
+    if (-not $url -and $be -eq 'tailscale') {
+        Write-Log '  tailscale unavailable; falling back to cloudflare quick tunnel'
+        $url = Start-TunnelCloudflare
+    }
+    elseif ($be -eq 'cloudflare') { $url = Start-TunnelCloudflare }
+
+    # 5) guard must be live (this goes through the proxy into the VM)
+    $guarded = Test-GuardEnforced
+    if ($guarded -eq $true) { Write-Log '[auth] OK: unauthenticated request returns 401 (via VM)' }
+    elseif ($guarded -eq $false) {
+        Write-Log '[auth] CRITICAL: service answers WITHOUT a passcode - stopping tunnels'
+        Stop-TunnelAll
+        return $false
+    }
+    else { Write-Log '[auth] WARNING: could not verify guard' }
+
+    if ($url) {
+        Set-Content -Path $urlFile -Value $url -Encoding ASCII
+        Write-Log ('PUBLIC URL: ' + $url + '  -> VM ' + $ip)
+    }
+    else { Write-Log 'no public URL available'; return $false }
+    return $true
+}
+
 switch ($Action) {
 
     'ensure' {
@@ -164,6 +295,11 @@ switch ($Action) {
             Write-Host 'Set it once, then re-run:'
             Write-Host '  [Environment]::SetEnvironmentVariable("KB_ACCESS_TOKEN","<passcode>","User")'
             exit 1
+        }
+
+        if ($Target -eq 'vm') {
+            if (-not (Ensure-VmServe)) { exit 1 }
+            exit 0
         }
 
         if (-not (Start-Service)) { exit 1 }
@@ -227,23 +363,37 @@ switch ($Action) {
     'install-task' {
         $ps1 = Join-Path $here 'deploy.ps1'
         $act = New-ScheduledTaskAction -Execute 'powershell.exe' `
-            -Argument ('-NoProfile -ExecutionPolicy Bypass -File "' + $ps1 + '" -Action ensure -Port ' + $Port)
+            -Argument ('-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' +
+                       $ps1 + '" -Action ensure -Target ' + $Target + ' -Port ' + $Port)
         $trigLogon = New-ScheduledTaskTrigger -AtLogOn
-        # no -RepetitionDuration on purpose: an empty Duration means "repeat
-        # indefinitely". [TimeSpan]::MaxValue serialises to P99999999DT23H59M59S
-        # which Task Scheduler rejects as out of range.
-        $trigRepeat = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(2) `
-            -RepetitionInterval (New-TimeSpan -Minutes $IntervalMinutes)
+        # Logon-only by default: a repeating trigger kept popping up a console
+        # window every few minutes and interrupting the user. Pass
+        # -IntervalMinutes N (>0) to also add a watchdog repeat.
+        $triggers = @($trigLogon)
+        if ($IntervalMinutes -gt 0) {
+            # no -RepetitionDuration on purpose: an empty Duration means "repeat
+            # indefinitely". [TimeSpan]::MaxValue serialises to
+            # P99999999DT23H59M59S which Task Scheduler rejects as out of range.
+            $triggers += New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(2) `
+                -RepetitionInterval (New-TimeSpan -Minutes $IntervalMinutes)
+        }
         $set = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-            -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 15)
-        $prin = New-ScheduledTaskPrincipal -UserId ($env:USERDOMAIN + '\' + $env:USERNAME) -LogonType Interactive -RunLevel Limited
-        Register-ScheduledTask -TaskName $TaskName -Action $act -Trigger @($trigLogon, $trigRepeat) `
+            -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 20) -Hidden
+        # Highest: netsh interface portproxy (Target=vm) needs admin rights
+        $runLevel = if ($Target -eq 'vm') { 'Highest' } else { 'Limited' }
+        $prin = New-ScheduledTaskPrincipal -UserId ($env:USERDOMAIN + '\' + $env:USERNAME) -LogonType Interactive -RunLevel $runLevel
+        Register-ScheduledTask -TaskName $TaskName -Action $act -Trigger $triggers `
             -Settings $set -Principal $prin -Force `
-            -Description 'Keep the study knowledge base service and public tunnel alive (see web/README.md).' | Out-Null
+            -Description 'Keep the study knowledge base online: start VM, forward port, keep tunnel alive (see web/README.md).' | Out-Null
         $t = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
         if ($t) {
-            Write-Host ('scheduled task installed: ' + $TaskName + '  (state=' + $t.State + ')')
-            Write-Host ('  at logon + every ' + $IntervalMinutes + ' minutes -> deploy.ps1 -Action ensure')
+            Write-Host ('scheduled task installed: ' + $TaskName + '  (state=' + $t.State + ', target=' + $Target + ', runLevel=' + $runLevel + ')')
+            if ($IntervalMinutes -gt 0) {
+                Write-Host ('  at logon + every ' + $IntervalMinutes + ' minutes -> deploy.ps1 -Action ensure -Target ' + $Target)
+            }
+            else {
+                Write-Host ('  at logon only (no repeat, no popup) -> deploy.ps1 -Action ensure -Target ' + $Target)
+            }
         }
         else {
             Write-Host 'ERROR: scheduled task was NOT created (see message above).' -ForegroundColor Red

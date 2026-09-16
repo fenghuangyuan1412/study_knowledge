@@ -32,15 +32,17 @@
    - 本机：`powershell -ExecutionPolicy Bypass -File web\run.ps1 -Action start`（start / status / logs / stop，可 `-Port` 换端口）；
    - Docker：`docker compose up --build -d`（默认 http://127.0.0.1:18765，`KB_PORT=9000` 可换端口；镜像只打包应用与引擎，个人内容与模型数据用卷挂载，互不混入）。
 5. **新增知识库**：建目录 + 写 README 简介；语料按需走「全文索引」或「向量入库」任意一种接入。
-6. **公网访问（方案 A：隧道穿透 + 常态化部署，供朋友内测）**：模型与数据都留在本机，只把本机服务映射到公网，不迁移数据、不部署云模型。
-   - **永久地址**：`https://pc-202412121713.tail69ff66.ts.net/`（Tailscale Funnel 提供固定 HTTPS 域名，**不随重启变化**）；
-   - **开机即在线**：`powershell -ExecutionPolicy Bypass -File web\deploy.ps1 -Action ensure` 是幂等的一键恢复（起服务 → 开隧道 → 校验守卫 → 记录地址）。已注册 Windows 计划任务 `StudyKnowledge-KB-AutoDeploy`，**登录时 + 每 5 分钟**自动执行，重启后自动恢复、隧道掉线自动重拉；
-   - **访问口令（强制）**：先设 `KB_ACCESS_TOKEN`（环境变量，**不入库**）。**没设口令时 `deploy.ps1`/`tunnel.ps1` 会拒绝暴露**，并在开隧道前端到端确认「无口令请求返回 401」；
-   - 把「地址 + 口令」发给朋友即可；手机端浏览器打开后「添加到主屏幕」即成为全屏 App（PWA）；
-   - 排查状态：`web\deploy.ps1 -Action status`；停隧道：`-Action stop`；
-   - 后续写**安卓端**直接复用 `/api/status` 与 `/api/ask`，鉴权统一走 `X-KB-Token` 头，**不需要另建后端**；
+6. **长期部署（虚拟机 Docker + 隧道穿透，供朋友内测）**：知识库跑在 **VMware 虚拟机（Ubuntu 24.04）的 Docker 里**作为长期服务器，宿主机只负责「开穿透」与「提供模型服务」。数据与模型都不出本机。
+   - **永久地址**：`https://pc-202412121713.tail69ff66.ts.net/`（Tailscale Funnel，**不随重启变化**）。Tailscale 在宿主机、Funnel 只能转发宿主机端口，因此用 `netsh portproxy` 把 18765 转给 VM —— **公网地址与口令始终不变**；
+   - **开机即在线**：两个 Windows 计划任务在**登录时**自动拉起（均隐藏窗口、不重复触发）：
+     `StudyKnowledge-VM-AutoStart`（`vmrun` 启动虚拟机）→ `StudyKnowledge-KB-AutoDeploy`（停宿主服务 → 等 VM → 端口转发 → 开 Funnel → 校验守卫）。VM 内 Docker 与容器都是自启/自愈的；
+   - **一键恢复**：`web\deploy.ps1 -Action ensure -Target vm`；状态查询 `web\deploy.ps1 -Action status`、`web\vm.ps1 -Action status`；
+   - **访问口令（强制）**：`KB_ACCESS_TOKEN`（VM 的 `.env` 与宿主机环境变量同值，**不入库**）。**没设口令时会拒绝暴露**，并端到端确认「无口令请求返回 401」；
+   - **一键部署/更新**：`python web\vm_deploy.py --stage all`；改完 `web/` 代码后 `--stage upload` + `build` + `up` 即可；
+   - 把「地址 + 口令」发给朋友即可；手机端浏览器打开后「添加到主屏幕」即成为全屏 App（PWA）；写**安卓端**直接复用 `/api/status` 与 `/api/ask`（鉴权走 `X-KB-Token` 头），**不需要另建后端**；
+   - **扩展位（后门）**：VM 里的 `nginx-proxy-manager` 占 80/443/81，以后加站点、申请证书在网页上点几下即可；**别的网站与 new-api 都往这里放**；
    - **上云**：`Dockerfile` + `docker-compose.yml` 已含全部环境变量，可直接用于云服务器或宝塔面板；
-   - 环境变量表、手机端说明与踩坑记录见 `web/README.md`，方向约定见 `agent.md` 第六节。
+   - 虚拟机部署细节见 `web/deploy-vm/README.md`，环境变量与踩坑记录见 `web/README.md`，方向约定见 `agent.md` 第六节。
 
 ## 使用示例
 

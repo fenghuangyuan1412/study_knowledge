@@ -58,20 +58,28 @@
 
 **定位**：本知识库只有两个用途 —— 本人自用 + 朋友帮忙内测（不盈利、不对外运营）。因此选**隧道穿透**而非云服务器：不迁移数据、不另外部署模型，直接把自己电脑上已跑通的服务安全映射到公网。
 
-- **链路**：`Tailscale Funnel` → 本机 `127.0.0.1:18765`（`web/server.py`）→ 本地 Ollama（`bge-m3` + `qwen3.5:9b`）
-- **永久地址**：`https://pc-202412121713.tail69ff66.ts.net/`。Tailscale Funnel 提供**固定 HTTPS 域名，不随重启变化**；早期用的 cloudflared 快速隧道地址每次重启都会变，已降级为备用方案。
+- **链路（当前）**：`Tailscale Funnel` → 宿主机 `127.0.0.1:18765` → `netsh portproxy` → **VM `192.168.163.128:18765`（Docker 容器 `kb-web`）** → 宿主机 Ollama（`bge-m3` + `qwen3.5:9b`）
+- **宿主形态**：知识库**跑在 VMware 虚拟机（Ubuntu 24.04）的 Docker 里**，目录 `/opt/study-knowledge`。宿主机只负责两件事——**开穿透**与**提供模型服务**。这样 VM 就是一台可长期使用的服务器，后续别的站点也往上面放。
+- **永久地址**：`https://pc-202412121713.tail69ff66.ts.net/`。Tailscale 跑在宿主机、Funnel 只能转发宿主机本地端口，所以用 portproxy 把 18765 转给 VM——**对 Tailscale 而言后端没变，公网地址与口令都不需要改**。
 - **模型**：保持**本地自托管**，不引入云 API、无按量费用；代价是本机需保持开机。
 - **访问控制（强制）**：服务一经隧道暴露，**必须**带访问口令。口令从环境变量 `KB_ACCESS_TOKEN` 注入，**任何情况下不写入入库文件**。
   - 前端：首次访问提示输入口令 → 存 `localStorage` → 请求以 `X-KB-Token` 头携带；
   - 后端：`web/server.py` 中间件校验，并**按 IP 限流**，防止口令外泄后刷爆本机模型；
   - **暴露前必须端到端验证**：不带口令请求 `/api/status` 必须得到 401。若返回 200，说明服务是以「无口令模式」启动的，此时**禁止开隧道**（`deploy.ps1` / `tunnel.ps1` 会自动拒绝并停掉隧道）。
 - **并发保护（强制）**：本机显存有限（AMD 16GB），**必须**保留生成并发闸门（`KB_MAX_CONCURRENT`）。并发压垮 GPU 会触发 ROCm OOM，localbrain 会静默降级成「纯语义检索」——接口看起来正常，但用户拿到的是片段列表而非 AI 回答。
-- **常态化（开机即在线）**：`web\deploy.ps1 -Action ensure` 是**幂等的一键恢复**命令：起服务 → 开 Funnel → 校验守卫 → 记录地址。Windows 计划任务 `StudyKnowledge-KB-AutoDeploy` 在**登录时 + 每 5 分钟**执行它，因此重启后自动恢复、隧道掉线自动重拉。手动排查用 `deploy.ps1 -Action status`。
+- **常态化（开机即在线）**：整条链由两个 Windows 计划任务在**登录时**自动拉起（都隐藏窗口、不重复触发）：
+  - `StudyKnowledge-VM-AutoStart` → `vm.ps1 -Action start`（`vmrun start <vmx> nogui` 启动虚拟机）；
+  - `StudyKnowledge-KB-AutoDeploy` → `deploy.ps1 -Action ensure -Target vm`（停宿主服务 → 等 VM → 端口转发 → 开 Funnel → 校验守卫），以 `-RunLevel Highest` 运行（`netsh portproxy` 需要管理员）。
+  - VM 内 Docker 是 `systemctl enable`，容器是 `restart: unless-stopped`，所以 VM 一启动容器就起。手动排查用 `deploy.ps1 -Action status` / `vm.ps1 -Action status`。
 - **对外范围**：口令即边界。两个库（`ai-software-testing`、`毛选`）都对内测朋友开放；**Web 层的毛选库只有「精读笔记 + 分卷内容总结」，1–7 卷原文全文不在公网链路上**（全文只在本地 skill 目录）。日后新增知识库若含版权大语料，**默认不纳入公网问答**。
 - **移动端**：问答页按 PWA 适配，手机浏览器「添加到主屏幕」即可当 App 用；**API 口径需保持可被安卓端复用**——口令统一走 `X-KB-Token` 头，后续安卓端直接调 `/api/status` 与 `/api/ask`，不另建后端。
+- **扩展位（后门，已预留）**：VM 里的 `nginx-proxy-manager` 占 80/443/81，以后加站点在网页上点几下即可（含自动证书）；加新端口就在宿主机补一条 portproxy。**别的网站与 new-api 穿透都往这两个位置放**，不需要改动本知识库的链路。详见 `web/deploy-vm/README.md`。
 - **上云预案**：`Dockerfile` + `docker-compose.yml` 已支持容器化（含口令/限流/并发闸门等全部环境变量），可直接用于云服务器或宝塔面板；详见 `web/README.md`。
 - **本项目的自研工具（都在 `web/`，需入库维护）**：
-  - `deploy.ps1` —— 公网部署的一键恢复/状态/自启任务管理（见上）；
+  - `deploy.ps1` —— 公网部署的一键恢复/状态/自启任务管理；`-Target host`（服务在本机）或 `-Target vm`（服务在 VM，含端口转发）；`-IntervalMinutes 0` 表示只登录时跑一次、不重复弹窗；
+  - `vm.ps1` —— VMware 虚拟机生命周期（start/stop/status/wait-ssh）与自启任务；
+  - `vm_ssh.py` / `vm_deploy.py` —— 通过 SSH 把应用与数据部署进 VM（体检/上传/生成 .env/构建/启动/验证）；
+  - `deploy-vm/` —— VM 的编排（`docker-compose.vm.yml`）、Docker 引导脚本与部署文档；
   - `tunnel.ps1` —— cloudflared 快速隧道（备用方案）；
   - `kb_ingest.py` —— 按指定知识库入库 Markdown。**必须用它而不是裸 `localbrain collect`**：CLI 的 config 是硬编码的，且采集输出目录不读 config、秒级 id 会互相覆盖（详见 `web/README.md` 踩坑 13-16）；
   - `mao_summarize.py` —— 毛选分卷内容总结管线（map-reduce + 断点续跑），`--volume N` 依次产出后续批次。
@@ -97,3 +105,9 @@
   2. 立第三条强制约定：**必须保留生成并发闸门**（并发会触发 ROCm OOM 并导致静默降级）；暴露前必须端到端确认「无口令返回 401」。
   3. 立**内容批次例外**：分卷整理以「一卷」为批次单位，不受「每批固定 5 条」约束。
   4. 内容两批：`kb/ai-software-testing/batch-002`（参照华测《测试开发大师课》大纲，5 条测试开发能力体系）；`kb/maoxuan/batch-002`（第一卷全卷 18 篇内容总结，用本地模型 map-reduce 生成，解决向量库内容过薄、本地模型只能给大纲的问题）。
+- **本次提交（信息：结构-知识库迁入虚拟机长期部署，穿透链与扩展位改造）**：
+  1. **宿主形态变更**：知识库从「跑在 Windows 宿主上」迁到 **VMware 虚拟机（Ubuntu 24.04）的 Docker**（`/opt/study-knowledge`）。宿主机保留两个职责——开穿透、提供模型服务。公网地址与口令**均未变化**（portproxy 把 18765 转发给 VM，对 Tailscale 而言后端没变）。
+  2. 新增 `web/deploy-vm/`（编排 + Docker 引导 + 部署文档）、`web/vm.ps1`（VM 生命周期与自启任务）、`web/vm_ssh.py`、`web/vm_deploy.py`（SSH 一键部署）；`deploy.ps1` 新增 `-Target vm` 与 `-Target host` 分流，并把计划任务从「每 5 分钟重复」改为**仅登录时执行且隐藏窗口**（用户反馈弹窗打断操作）。
+  3. **容器多知识库支持**：`bootstrap_config.py` 现在生成两个库的配置，并**以宿主机完整配置为模板**（挂载 `/config-templates`）——只覆盖 `data_dir`/`storage.persist_directory`/`embedding`/`llm`，避免缺 `storage` 段导致跨库串味。
+  4. Dockerfile 补 `git`（原版缺，构建必失败）并加 `DEBIAN_MIRROR`/`PIP_INDEX`/`GITHUB_PROXY` 构建参数适配国内网络。
+  5. **扩展位（后门）**：VM 内 `nginx-proxy-manager` 占 80/443/81，后续别的网站与 new-api 穿透直接往这里放。踩坑记录补至 22 条。

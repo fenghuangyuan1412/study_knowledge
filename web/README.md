@@ -205,3 +205,35 @@ docker compose up --build -d             # 默认 http://<服务器IP>:18765
     否则会出现「脚本 18/18 全部 OK，但向量库里只有一半」这种假成功。
 16. **索引失败常见诱因是 GPU 争抢**：同时跑批量总结（占满显存）时做入库，embedding 会失败。
     批量生成内容与批量入库**不要并发**。
+17. **`python:3.12-slim` 里没有 git**：原 Dockerfile 直接 `pip install "localbrain @ git+https://..."`，
+    缺 git 会**构建失败**。已在 Dockerfile 里补 `apt-get install git`，并加了
+    `DEBIAN_MIRROR` / `PIP_INDEX` / `GITHUB_PROXY` 三个构建参数供国内网络覆盖。
+18. **容器里的配置不能只写 embedding/llm/data_dir**（最隐蔽的一个坑）。
+    `storage.persist_directory` 决定 Chroma 目录；少写这一段，检索会落到**默认库**的向量目录，
+    表现是「问毛选却返回软件测试的内容」或「直接说找不到文档」。
+    现在的做法：把**宿主机的完整配置**挂成 `/config-templates` 模板，`bootstrap_config.py`
+    以模板为底，只覆盖 `data_dir` / `storage.persist_directory` / `embedding` / `llm`，其余段原样保留。
+19. **诊断时 `docker exec` 必须加 `-i` 才能读 heredoc**：`docker exec ct python - <<'PY'` 会静默无输出，
+    看着像"脚本没跑"，其实只是 stdin 没接上。稳妥做法是把脚本 `docker cp` 进去再 `docker exec python /tmp/x.py`。
+20. **PowerShell 变量名大小写不敏感**：`deploy.ps1` 里原有的 `$target`（服务 URL）与新加的
+    `-Target` 参数是**同一个变量**，赋值 URL 时触发 `ValidateSet` 校验失败。已把内部变量改名为 `$svcUrl`。
+21. **VM 的网络是"半个互联网"**：实测 `archive.ubuntu.com`、`download.docker.com`、清华/阿里镜像、
+    `docker.m.daocloud.io` 都通；但 **`pypi.org` 与 `registry-1.docker.io` 超时、`github.com` 直连超时**。
+    所以 Docker 要配 `registry-mirrors`，pip 要配清华源，GitHub 要走 `gh-proxy.com` 代理。
+22. **`netsh interface portproxy` 需要管理员权限**：所以 `-Target vm` 的计划任务用
+    `-RunLevel Highest` 注册（计划任务以最高权限运行不需要 UAC 弹窗）。
+    副作用：经 portproxy 的请求源 IP 都变成宿主机的，**按 IP 限流会把所有人算作一个 IP**；
+    不过公网路径上 Tailscale 会带 `X-Forwarded-For`，所以外网访问的真实 IP 仍然是准的。
+
+---
+
+## 部署到虚拟机（长期服务器形态）
+
+知识库可以整体搬到 VMware 虚拟机里跑（Docker），宿主机只保留「开穿透 + 提供模型」两个职责。
+**公网地址与口令均不变。** 完整说明见 [`deploy-vm/README.md`](deploy-vm/README.md)。
+
+```powershell
+python web\vm_deploy.py --stage all                          # 一键部署到 VM
+powershell -File web\deploy.ps1 -Action ensure -Target vm    # 一键恢复整条链
+powershell -File web\vm.ps1      -Action status              # VM 与自启任务状态
+```

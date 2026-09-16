@@ -2,6 +2,18 @@
 # 注意：不打包个人知识内容与模型；内容用 ./kb:/kb-in 挂载，向量数据存卷 kb-data。
 FROM python:3.12-slim
 
+# ---------------------------------------------------------------------------
+# 构建期参数：默认全部走官方源（与之前行为一致）；
+# 国内网络用 --build-arg 覆盖（见 web/deploy-vm/README.md）：
+#   DEBIAN_MIRROR=mirrors.tuna.tsinghua.edu.cn
+#   PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
+#   GITHUB_PROXY=https://gh-proxy.com/
+# ---------------------------------------------------------------------------
+ARG DEBIAN_MIRROR=deb.debian.org
+ARG PIP_INDEX=https://pypi.org/simple
+ARG GITHUB_PROXY=
+ARG LOCALBRAIN_REPO=https://github.com/agent-creativity/agentic-local-brain.git
+
 ENV PYTHONUNBUFFERED=1 \
     PYTHONUTF8=1 \
     PYTHONIOENCODING=utf-8 \
@@ -11,9 +23,19 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# 安装 localbrain 引擎（Python 包，来自 GitHub）
-RUN pip install --no-cache-dir \
-    "localbrain @ git+https://github.com/agent-creativity/agentic-local-brain.git"
+# git 是 pip 安装 git+https 依赖的**必需**前提，而 python:3.12-slim 默认不含 git
+# （原版 Dockerfile 缺这一步，直连环境下会直接构建失败）
+RUN set -eux; \
+    if [ "$DEBIAN_MIRROR" != "deb.debian.org" ] && [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+        sed -i "s|deb.debian.org|$DEBIAN_MIRROR|g" /etc/apt/sources.list.d/debian.sources; \
+    fi; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends git ca-certificates; \
+    rm -rf /var/lib/apt/lists/*
+
+# 安装 localbrain 引擎（Python 包，来自 GitHub；GITHUB_PROXY 用于国内加速）
+RUN pip install --no-cache-dir -i "$PIP_INDEX" \
+    "localbrain @ git+${GITHUB_PROXY}${LOCALBRAIN_REPO}"
 
 # 拷贝问答站（前端页面 + 后端 + docker 辅助脚本）
 COPY web/ /app/web/
