@@ -117,6 +117,11 @@
 7. **不要用管道调用 `run.ps1` / `deploy.ps1` / `tunnel.ps1` / `vm.ps1`**：它们 `Start-Process` 起的常驻进程会继承标准输出句柄，管道永不关闭，调用方会一直等下去。自动化请用 `Start-Process ... -RedirectStandardOutput <文件>`。
 8. **PowerShell 变量名大小写不敏感**：`$target` 与 `$Target` 是同一个变量，改名时要全局搜。
 9. **任何凭据不得写字面量默认值**：`os.environ.get("VM_PASS", "123456")` 这种写法等同于把密码提交进仓库。一律只从环境变量读，或写入已被 `.gitignore` 排除的本地文件（如 `web/.runtime/vm.pass`），取不到就报错退出。**本仓库是 GitHub 公开仓库，字面量凭据一旦提交即随 git 历史永久外泄，删代码也收不回——只能改密。** 已受害：`6277c16` 曾把 VM 密码写进 `web/vm_ssh.py`，代码已修，**VM 侧密码仍需另行更换**。
+10. **容器外写入知识库后必须重启 `kb-web`**：`kb_ingest.py`、`localbrain mine`、手工导数据等都在服务进程之外写 Chroma，而 `web/server.py` 的 `_rag_for()` 会**永久缓存** `RAGQuery`，其底层 Chroma `PersistentClient` 把 collection 视图缓在进程内存里——**别的进程写进去的东西，正在跑的服务看不见**。必须 `docker restart kb-web`。
+
+    症状与上面四条「静默错误」相反：**数据侧完全正常，是读的一方瞎了**。表现为入库报告成功、Chroma 里 chunk 齐全、语义分数很高，但 `/api/ask` 返回 `mode=none` + "No relevant information was found"，看着像"内容根本没入库"。
+
+    定位手法（下次遇到直接照抄）：**同一条查询走两条路径对比**——在容器内新起进程直调 `RAGQuery.query_with_fallback()`，与走 HTTP 调 `/api/ask`。前者正常、后者为空，即可断定问题在服务的缓存视图而非数据，重启即愈。本次实测：容器内直调 0.798 命中，`/api/ask` 却是 `mode=none`；重启后立刻恢复。
 
 ### localbrain 的坑（这四条都造成过"静默错误"——脚本报成功、实际没生效）
 
@@ -158,3 +163,7 @@
   2. 新增 `CHANGELOG.md`，确立「按版本归档、`main` 上打 git tag」的做法，本版打 tag `v1.0`；
   3. `web/deploy-vm/README.md` 补齐 **Nginx Proxy Manager 完整用法**，并记录了「自建域名访问不了」的实测结论与四种场景的正确做法；
   4. **记录后续方向**：① 界面优化（交互/引用展示/多轮上下文）；② 知识内容可由朋友添加（Web 上传入口、PDF 解析入向量库、投稿待审、异步任务队列）；③ 安卓端、毛选后续卷、NPM 作为公网入口。
+- **v1.0 之后（信息：安全-修复 VM 密码硬编码入公开仓库；补第八节第 9、10 条硬约束）**：
+  1. 新增第 9 条——`web/vm_ssh.py` 曾把虚拟机 SSH 密码写成 `os.environ.get("VM_PASS", "123456")` 的默认值，而本仓库公开，凭据随 `6277c16` 永久外泄。代码已改为只从环境变量 / `web/.runtime/vm.pass`（已 gitignore）读取，VM 侧密码已另行更换。
+  2. 新增第 10 条——AI 软件测试库问答长期返回 `mode=none`，一度被误判为"向量缺失"。实际 Chroma 里 38 个 chunk 全覆盖、容器内直调语义分数 0.798，故障仅在 `server.py` 永久缓存的 `RAGQuery` 视图；**容器外写入后必须 `docker restart kb-web`**。这是本文件第一条"数据没问题、读的一方瞎了"型约束，与 localbrain 那四个静默错误方向相反。
+  3. 顺带修掉一处真实数据缺陷：`localbrain mine run` 补齐了文档级向量（`Doc Embeddings` 5 → 10）。注意它与 RAG 检索无关——检索读的是名为 `knowledge` 的 chunk 级 collection，排查时别把两者混为一谈。
