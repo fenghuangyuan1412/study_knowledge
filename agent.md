@@ -116,6 +116,7 @@
 6. **`.ps1` 里代码字符串只用 ASCII**：Windows PowerShell 5.1 在无 BOM 时按 GBK 读脚本，中文字符串会变乱码并破坏语法（注释可中文，代码字符串不行）。
 7. **不要用管道调用 `run.ps1` / `deploy.ps1` / `tunnel.ps1` / `vm.ps1`**：它们 `Start-Process` 起的常驻进程会继承标准输出句柄，管道永不关闭，调用方会一直等下去。自动化请用 `Start-Process ... -RedirectStandardOutput <文件>`。
 8. **PowerShell 变量名大小写不敏感**：`$target` 与 `$Target` 是同一个变量，改名时要全局搜。
+9. **任何凭据不得写字面量默认值**：`os.environ.get("VM_PASS", "123456")` 这种写法等同于把密码提交进仓库。一律只从环境变量读，或写入已被 `.gitignore` 排除的本地文件（如 `web/.runtime/vm.pass`），取不到就报错退出。**本仓库是 GitHub 公开仓库，字面量凭据一旦提交即随 git 历史永久外泄，删代码也收不回——只能改密。** 已受害：`6277c16` 曾把 VM 密码写进 `web/vm_ssh.py`，代码已修，**VM 侧密码仍需另行更换**。
 
 ### localbrain 的坑（这四条都造成过"静默错误"——脚本报成功、实际没生效）
 

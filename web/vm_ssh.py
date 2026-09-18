@@ -21,8 +21,26 @@ import paramiko
 
 HOST = os.environ.get("VM_HOST", "192.168.163.128")
 USER = os.environ.get("VM_USER", "awei")
-PASS = os.environ.get("VM_PASS", "123456")
 PORT = int(os.environ.get("VM_PORT", "22"))
+
+# 密码只从环境变量或 web/.runtime/（已 gitignore）取，绝不写默认值——
+# 本仓库是公开仓库，任何字面量凭据都会随 git 历史永久外泄。
+PASS_FILE = Path(__file__).resolve().parent / ".runtime" / "vm.pass"
+
+
+def _resolve_pass() -> str:
+    p = (os.environ.get("VM_PASS") or "").strip()
+    if p:
+        return p
+    if PASS_FILE.exists():
+        return PASS_FILE.read_text(encoding="utf-8").strip()
+    raise SystemExit(
+        f"缺少 VM 密码：设环境变量 VM_PASS，或把密码写入 {PASS_FILE}"
+        "（该目录已被 .gitignore 排除，不会入库）"
+    )
+
+
+PASS = _resolve_pass()
 
 
 def connect() -> paramiko.SSHClient:
