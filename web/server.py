@@ -155,15 +155,45 @@ DEFAULT_KB = "ai-software-testing"
 _kb_cache: Dict[str, dict] = {}
 
 
+def _file_stamp(p: Path) -> tuple:
+    try:
+        st = p.stat()
+        return (int(st.st_mtime_ns), int(st.st_size))
+    except OSError:
+        return (0, 0)
+
+
+def _rag_stamp(kb: str, cfg) -> tuple:
+    """向量数据的磁盘指纹：配置 + 元数据库 + Chroma 目录。别的进程改动后一定变。"""
+    db = _data_dir(cfg) / "db"
+    stamp = [_file_stamp(Path(PROFILES[kb]["config"])), _file_stamp(db / "metadata.db")]
+    storage = cfg.get("storage", {}) or {}
+    raw = storage.get("persist_directory")
+    chroma = Path(os.path.expanduser(str(raw))) if raw else db / "chroma"
+    try:
+        children = sorted(chroma.iterdir())[:64]
+    except OSError:
+        children = []
+    for p in children:
+        if p.name.endswith("-shm"):  # 只读也会碰它，算进来会导致无限重建
+            continue
+        stamp.append(_file_stamp(p))
+    return tuple(stamp)
+
+
 def _cfg(kb: str):
     """返回某知识库的 localbrain 配置对象（惰性加载）。"""
     info = PROFILES.get(kb)
     if info is None:
         raise KeyError(kb)
-    if kb not in _kb_cache or _kb_cache[kb].get("cfg") is None:
+    entry = _kb_cache.setdefault(kb, {})
+    path = Path(info["config"])
+    stamp = _file_stamp(path)
+    if entry.get("cfg") is None or entry.get("cfg_stamp") != stamp:
         from kb.config import Config
-        _kb_cache.setdefault(kb, {})["cfg"] = Config(Path(info["config"]))
-    return _kb_cache[kb]["cfg"]
+        entry["cfg"] = Config(path)
+        entry["cfg_stamp"] = stamp
+    return entry["cfg"]
 
 
 def _keys_ok(cfg) -> tuple:
@@ -195,13 +225,21 @@ def _count_items(cfg) -> int:
 
 
 def _rag_for(kb: str):
-    """按知识库构造 RAGQuery；失败每 8s 自动重试（自愈）。"""
+    """按知识库构造 RAGQuery；失败每 8s 重试，向量数据有变动则立刻重建（自愈）。"""
     cfg = _cfg(kb)
     emb_ok, llm_ok = _keys_ok(cfg)
     if not (emb_ok and llm_ok):
         _kb_cache[kb]["rag"] = None
         return None
     entry = _kb_cache.setdefault(kb, {})
+    stamp = _rag_stamp(kb, cfg)
+    if entry.get("rag") is not None and entry.get("rag_stamp") != stamp:
+        # RAGQuery 底层的 Chroma PersistentClient 把 collection 视图缓在进程内存里，
+        # 容器外进程（kb_ingest.py / localbrain mine）写进去的数据读不到，
+        # 只能换掉整个对象。见 agent.md 第八节第 10 条。
+        log.warning("kb=%s 向量数据已变更，重建检索引擎", kb)
+        entry["rag"] = None
+        entry["last_try"] = 0.0
     rag = entry.get("rag")
     if rag is None and time.time() - entry.get("last_try", 0.0) > 8.0:
         entry["last_try"] = time.time()
@@ -209,6 +247,7 @@ def _rag_for(kb: str):
             from kb.query.rag import RAGQuery
             rag = RAGQuery(cfg)
             entry["rag"] = rag
+            entry["rag_stamp"] = stamp
             entry.pop("err", None)
         except Exception as e:  # noqa: BLE001
             log.exception("RAGQuery init failed (kb=%s)", kb)
